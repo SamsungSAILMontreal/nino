@@ -5,3 +5,4 @@
 # LICENSE file in the root directory of this source tree.
 
 from .graph import *
+from .graph_gpt import *

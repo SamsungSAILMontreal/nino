@@ -125,6 +125,7 @@ TASKS = {
             'lr': 0.006,
             'target': 90.5
         },
+
     'C10-32': {
             'net_args': {'hid': (32, 64, 64), 'in_channels': 3, 'num_classes': 10},
             'dataset': 'CIFAR10',

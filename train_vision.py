@@ -38,7 +38,7 @@ def test(model, data, target, verbose=0):
         correct = torch.sum(torch.argmax(output, -1).eq(target)).item()
         acc = correct / len(data) * 100
 
-    if verbose > 1:
+    if verbose > 2:
         print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
             test_loss, correct, len(data), acc))
     return {'loss': test_loss, 'acc': acc}
