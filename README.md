@@ -8,8 +8,9 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2403.12143-b31b1b.svg?logo=arxiv)](https://arxiv.org/abs/2409.04434)
 
-## Intro
+[marktechpost](https://www.marktechpost.com/2024/09/17/nino-a-novel-machine-learning-approach-to-accelerate-neural-network-training-through-neuron-interaction-and-nowcasting/)
 
+## Intro
 
 **Neuron interaction and Nowcasting (NiNo) model** 
 
@@ -41,10 +42,18 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
 
 ## Updates
 
-- [x] Initial code release with a pretrained NiNo model.
-- [x] Neural graphs and evaluation script for vision tasks.
-- [x] Neural graphs and evaluation script for language tasks with transformers.
-- [ ] Training code for NiNo. 
+- [x] Initial code release with a pretrained NiNo model (see the [`checkpoints`](checkpoints) folder).
+  - [x] `nino.pt` - default model (assume the GPT2 tokenizer)
+  - [x] `nino_no_posw.pt` - no positional encoding for word embeddings (can be used for arbitrary tokenizers)
+  - [x] `nino_h32.pt` - model with hidden size 32 instead of default 128
+  - [ ] WNN checkpoint (coming soon)
+- [x] Neural graphs and evaluation script for convnet tasks.
+- [x] Neural graphs and evaluation script for transformer tasks:
+  - [x] GPT2
+  - [x] BERT (experimental code)
+  - [x] Llama (experimental code, see a graph for a smaller variant of `meta-llama/Meta-Llama-3.1-8B` in the [`results`](results) folder)
+  - [x] Vision Transformer (experimental code)
+- [ ] Training dataset and training code for NiNo. 
 
 ## Pretrained NiNo models
 

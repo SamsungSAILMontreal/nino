@@ -5,9 +5,15 @@
 # LICENSE file in the root directory of this source tree.
 
 """
+Neural graph for ConvNets according to the NiNo paper. Can also work for MLPs.
+
 To test the NeuralGraph class with a simple ConvNet, run:
 
     python graph/graph.py
+
+In case of import errors, you can run it as a module:
+
+    python -m graph.graph
 
 """
 import os.path
@@ -52,6 +58,7 @@ class NeuralGraph:
         self.self_loops = self_loops
         self.model_first_dim_out = model_first_dim_out
 
+        self._model_dict = self._update_model_dict()
         self._construct()
         if self.lpe:
             self._add_lpe()
@@ -99,6 +106,13 @@ class NeuralGraph:
         else:
             return w
 
+    def _update_model_dict(self):
+        """
+        Updates model_dict by adding auxiliary structural modules, e.g. residuals, heads.
+        :return:
+        """
+        return self._model_dict
+
     def _construct(self):
         """
         Constructs a pyg.data.Data object for a generic model (with fc/conv layers).
@@ -110,8 +124,7 @@ class NeuralGraph:
         c_off, r_off = 0, 0
         for layer, (name, sz) in enumerate(self._model_dict.items()):
             param_type = self._param_type(name, sz)
-            layer_name, param_name = name[:name.rfind('.')], name[name.rfind('.') + 1:]
-            key = param_name
+            layer_name, key = name[:name.rfind('.')], name[name.rfind('.') + 1:]
             if layer_name not in edge_index:
                 edge_index[layer_name] = {}
 
@@ -397,6 +410,24 @@ class NeuralGraph:
         except Exception as e:
             print(e)
 
+def run_test(model, graph, name=''):
+    print(model)
+    print('params:', sum({p.data_ptr(): p.numel() for p in model.parameters()}.values()))
+    print(f'NeuralGraph for {name.upper()}:')
+    print('num_nodes', graph.pyg_graph.num_nodes)
+    print('num_edges', graph.pyg_graph.num_edges)
+    print('contains_self_loops', graph.pyg_graph.contains_self_loops())
+    if graph.lpe:
+        print('pos', graph.pyg_graph.pos.shape)
+    print('edge_index', graph.pyg_graph.edge_index.shape)
+    graph.visualize(fig_size=(15, 15), path=f'./results/{name}_')
+    params = torch.cat([p.data.flatten() for n, p in model.named_parameters()])
+    graph.set_edge_attr([params, 2 * params])  # add the second state for debugging
+    print('edge_attr', graph.pyg_graph.edge_attr.shape)  # only set after calling set_edge_attr
+    graph.visualize(fig_size=(15, 15), edge_attr_key='edge_attr', path=f'./results/{name}_param_')
+    x = graph.to_vector()
+    print('graph converted back to params correctly: {}\n'.format(torch.allclose(params, x)))
+
 def test_graph_cnn():
     """
     Test the NeuralGraph class for a simple ConvNet.
@@ -423,25 +454,8 @@ def test_graph_cnn():
             return self.fc(x)
 
     model = ConvNet()
-    print(model)
-    print('params:', sum(p.numel() for p in model.parameters()))
-
     graph = NeuralGraph(model.named_parameters())
-    print('NeuralGraph for a simple ConvNet:')
-    print('num_nodes', graph.pyg_graph.num_nodes)
-    print('num_edges', graph.pyg_graph.num_edges)
-    print('contains_self_loops', graph.pyg_graph.contains_self_loops())
-    print('pos', graph.pyg_graph.pos.shape)
-    print('edge_index', graph.pyg_graph.edge_index.shape)
-    graph.visualize(path='./results/conv_')
-    params = torch.cat([p.data.flatten() for n, p in model.named_parameters()])
-    graph.set_edge_attr([params, 2 * params])  # add the second state for debugging
-    print('edge_attr', graph.pyg_graph.edge_attr.shape)  # only set after calling set_edge_attr
-    graph.visualize(edge_attr_key='edge_attr', path='./results/conv_param_')
-    params_reconstruct = graph.to_vector()
-    print(params.shape, params_reconstruct.shape)
-    print('graph converted back to params correctly: {}\n'.format(torch.allclose(params, params_reconstruct)))
-    return
+    run_test(model, graph, name='conv')
 
 
 if __name__ == '__main__':

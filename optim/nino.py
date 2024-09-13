@@ -13,6 +13,7 @@ See a full example in README, train_vision.py ar train_lm.py.
 import torch
 import numpy as np
 import transformers
+import torchvision
 import time
 from torch.optim import Optimizer
 from graph import *
@@ -59,8 +60,18 @@ class NiNo:
             # create a neural graph from the model
             if isinstance(model, transformers.GPT2PreTrainedModel):
                 self.graph = NeuralGraphGPT(self.model_dict, num_heads=model.config.n_head)
+            elif isinstance(model, transformers.BertPreTrainedModel):
+                self.graph = NeuralGraphBERT(self.model_dict, num_heads=model.config.num_attention_heads)
+            elif isinstance(model, transformers.LlamaPreTrainedModel):
+                self.graph = NeuralGraphLlama(self.model_dict,
+                                              num_heads=model.config.num_attention_heads,
+                                              num_key_value_heads=model.config.num_key_value_heads)
+            elif isinstance(model, torchvision.models.VisionTransformer):
+                self.graph = NeuralGraphViT(self.model_dict,
+                                              num_heads=model.encoder.layers.encoder_layer_0.num_heads)
             else:
                 self.graph = NeuralGraph(self.model_dict)
+
             if verbose:
                 print('\nNeuralGraph:')
                 print('num_nodes', self.graph.pyg_graph.num_nodes)
@@ -74,7 +85,12 @@ class NiNo:
                 self.graph.visualize()
 
             self.nino_device = next(model.parameters()).device if nino_device is None else nino_device
-            self.meta_model = NiNoModel(gnn=True, **kwargs).eval().to(self.nino_device)
+            state_dict = torch.load(ckpt, map_location=self.nino_device)
+            if 'model_args' in state_dict:
+                kwargs.update(state_dict['model_args'])
+                print('\n\nkwargs', kwargs)
+                state_dict = state_dict['state_dict']
+            self.meta_model = NiNoModel(**kwargs).eval().to(self.nino_device)
             if verbose:
                 print(self.meta_model)
 
@@ -83,7 +99,7 @@ class NiNo:
                                                          list(self.base_opt.state.keys()))
             self.base_opt.state['states'] = []
 
-            self.meta_model.load_state_dict(torch.load(ckpt, map_location=self.nino_device))
+            self.meta_model.load_state_dict(state_dict)
             self.ctx = self.meta_model.ctx
 
             # decay k with steps to predict more in the future at the beginning and less at the end of training

@@ -12,6 +12,13 @@ Example usage (NiNo's checkpoint checkpoints/nino.pt is used by default):
     python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
      --num_train_epochs 4 --layers 3 --dim 64 --heads 4
 
+To train a Llama3-based model with Grouped-Query Attention:
+
+    python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
+     --num_train_epochs 4 --layers 3 --dim 64 --heads 4 --heads_key_value 2
+     --tokenizer_name meta-llama/Meta-Llama-3.1-8B --login $HUGGING_FACE_TOKEN
+
+where $HUGGING_FACE_TOKEN is your Hugging Face token.
 """
 
 #!/usr/bin/env python
@@ -57,7 +64,7 @@ from accelerate import Accelerator, DistributedType, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 # from accelerate.utils import set_seed
 from datasets import load_dataset
-from huggingface_hub import Repository, create_repo
+from huggingface_hub import Repository, create_repo, login
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -69,8 +76,7 @@ from transformers import (
     AutoTokenizer,
     SchedulerType,
     default_data_collator,
-    get_scheduler,
-    GPT2Config,
+    get_scheduler
 )
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
@@ -117,10 +123,17 @@ def parse_args():
         help="path to the NiNo checkpoint.",
     )
     parser.add_argument(
+        "--hf_login",
+        type=str,
+        default=None,
+        help="Hugging Face token for downloading the model/config."
+    )
+    parser.add_argument(
         "--target",
         type=float,
         default=147,
-        help="target validation perplexity.",
+        help="target validation perplexity "
+             "(default is 147 for the WikiText dataset and a 3 layer transformer with a hidden size 64).",
     )
     parser.add_argument(
         "--period",
@@ -144,19 +157,25 @@ def parse_args():
         "--layers",
         type=int,
         default=12,
-        help="gpt num of layers.",
+        help="transformer num of layers.",
     )
     parser.add_argument(
         "--dim",
         type=int,
         default=64,
-        help="gpt dimensionality.",
+        help="transformer dimensionality.",
     )
     parser.add_argument(
         "--heads",
         type=int,
         default=8,
-        help="gpt num of heads.",
+        help="transformer num of heads.",
+    )
+    parser.add_argument(
+        "--heads_key_value",
+        type=int,
+        default=None,
+        help="transformer num of key value heads (for Grouped-Query Attention).",
     )
     parser.add_argument(
         "--sample_config",
@@ -438,6 +457,9 @@ def main():
             os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
 
+    if args.hf_login:
+        login(token=args.hf_login, add_to_git_credential=True)
+
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
     # (the dataset will be downloaded automatically from the datasets Hub).
@@ -499,6 +521,7 @@ def main():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
+
     if args.config_name:
         config = AutoConfig.from_pretrained(
             args.config_name,
@@ -519,8 +542,28 @@ def main():
             layers = args.layers
             dim = args.dim
             heads = args.heads
-        print('GPT2Config:\t', 'dim', dim, 'layers', layers, 'heads', heads, flush=True)
-        config = GPT2Config(n_embd=dim, n_layer=layers, n_head=heads)
+
+        config = transformers.AutoConfig.from_pretrained(
+            args.tokenizer_name,
+        )
+
+        if args.tokenizer_name == 'gpt2':
+            print('GPT2Config:\t', 'dim', dim, 'layers', layers, 'heads', heads, flush=True)
+            # config = GPT2Config(n_embd=dim, n_layer=layers, n_head=heads)
+            config.n_embd = dim
+            config.layers = layers
+            config.n_head = heads
+
+        elif args.tokenizer_name.lower().find('llama') >= 0:
+            print('LlamaConfig:\t', 'dim', dim, 'layers', layers, 'heads', heads, flush=True)
+            # make the model tiny for testing and visualization
+            config.hidden_size = dim
+            config.intermediate_size = dim * 4
+            config.num_hidden_layers = layers
+            config.num_attention_heads = heads
+            config.num_key_value_heads = heads // 2 if args.heads_key_value is None else args.heads_key_value
+            print('\nCONFIG:', config)
+
         logger.warning("You are instantiating a new config instance from scratch.")
 
     if args.tokenizer_name:
@@ -765,9 +808,9 @@ def main():
             eval_loss_ = float("inf")
             perplexity_ = float("inf")
 
-        logger.info(f"epoch {epoch_ + 1}, step {step_ + 1}, total step {total_step_ + 1}: "
+        print(f"epoch {epoch_ + 1}, step {step_ + 1}, total step {total_step_ + 1}: "
                     f"perplexity: {perplexity_} eval_loss: {eval_loss_}, "
-                    f"eval batches: {len(loss_)}")
+                    f"eval batches: {len(loss_)}", flush=True)
         return eval_loss_, perplexity_
 
     eval_loss = None
@@ -787,7 +830,7 @@ def main():
                     eval_loss, eval_ppl = get_eval_loss(model, epoch, step, total_steps)
                     eval_losses[total_steps] = eval_loss.item()
                     if args.target is not None and eval_ppl <= args.target:
-                        print('\nReached target perplexity of {:.2f}%<={:.2f}% in {} steps '
+                        print('\nReached target perplexity of {:.2f}%<={:.2f} in {} steps '
                               '({:.4f} seconds)'.format(eval_ppl,
                                                         args.target,
                                                         optimizer.step_idx,
