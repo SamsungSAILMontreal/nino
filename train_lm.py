@@ -123,6 +123,18 @@ def parse_args():
         help="path to the NiNo checkpoint.",
     )
     parser.add_argument(
+        "--nino_device",
+        type=str,
+        default=None,
+        help="NiNo device for parameter update prediction.",
+    )
+    parser.add_argument(
+        "--nino_mp_device",
+        type=str,
+        default=None,
+        help="NiNo's message passing device for parameter update prediction.",
+    )
+    parser.add_argument(
         "--hf_login",
         type=str,
         default=None,
@@ -736,6 +748,8 @@ def main():
                      model=model,
                      period=args.period,
                      max_steps=args.max_train_steps,
+                     nino_device=args.nino_device,
+                     message_passing_device=args.nino_mp_device,
                      amp=args.mixed_precision != 'no',
                      verbose=args.verbose)  # haven't tested with distributed training
 

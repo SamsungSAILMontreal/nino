@@ -84,6 +84,7 @@ class PNA(torch.nn.Module):
         update_edge_attr: bool = False,
         final_edge_update: bool = True,
         chunk_size: int = 0,
+        message_passing_device: Optional[torch.device] = None,
         **kwargs,
     ):
         super().__init__()
@@ -108,7 +109,8 @@ class PNA(torch.nn.Module):
         self.convs = ModuleList()
         for _ in range(num_layers - 1):
             self.convs.append(self.init_conv(in_channels, hidden_channels,
-                                             chunk_size=chunk_size, **kwargs))
+                                             chunk_size=chunk_size, message_passing_device=message_passing_device,
+                                             **kwargs))
             if isinstance(in_channels, (tuple, list)):
                 in_channels = (hidden_channels, hidden_channels)
             else:
@@ -117,10 +119,12 @@ class PNA(torch.nn.Module):
         if out_channels is not None and jk is None:
             self._is_conv_to_out = True
             self.convs.append(self.init_conv(in_channels, out_channels,
-                                             chunk_size=chunk_size, **kwargs))
+                                             chunk_size=chunk_size, message_passing_device=message_passing_device,
+                                             **kwargs))
         else:
             self.convs.append(self.init_conv(in_channels, hidden_channels,
-                                             chunk_size=chunk_size, **kwargs))
+                                             chunk_size=chunk_size, message_passing_device=message_passing_device,
+                                             **kwargs))
 
         self.norms = None
         if norm is not None:
@@ -345,6 +349,7 @@ class PNAConv(MessagePassing):
         modulate_edges: bool = False,
         gating_edges: bool = False,
         chunk_size=0,
+        message_passing_device: Optional[torch.device] = None,
         **kwargs,
     ):
         if len(aggregators) == len(scalers) == 1 and scalers[0] == "identity":
@@ -366,6 +371,7 @@ class PNAConv(MessagePassing):
         self.modulate_edges = modulate_edges
         self.gating_edges = gating_edges
         self.chunk_size = chunk_size
+        self.message_passing_device = message_passing_device
 
         self.F_in = in_channels // towers if divide_input else in_channels
         self.F_out = self.out_channels // towers
@@ -417,7 +423,18 @@ class PNAConv(MessagePassing):
         else:
             x = x.view(-1, 1, self.F_in).repeat(1, self.towers, 1)
 
-        out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=None)  # message passing and aggregation
+        if self.message_passing_device is not None:
+            device = x.device
+            # perform the propagation on a separate device
+            x = x.to(self.message_passing_device)
+            edge_index = edge_index.to(self.message_passing_device)
+            # if edge_attr is not None:
+            #     edge_attr = edge_attr.to(self.message_passing_device)
+            out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=None)
+            out = out.to(device)
+            x = x.to(device)
+        else:
+            out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=None)  # message passing and aggregation
 
         # node update (relatively cheap)
         out = torch.cat([x, out], dim=-1)
@@ -428,7 +445,7 @@ class PNAConv(MessagePassing):
         """
         This function is called in the self.propagate function of the forward pass above.
         """
-        # print('x_i', x_i.shape, x_i.norm().item(), x_j.norm().item())
+
         if edge_attr is not None:
             if self.modulate_edges:
                 if self.training:
@@ -451,18 +468,21 @@ class PNAConv(MessagePassing):
                                                                            x_i.shape,
                                                                            x_j.shape)
                 assert not torch.is_grad_enabled(), 'this must be run with torch.no_grad() to avoid memory leaks'
+
                 for i, nn_ in enumerate(self.pre_nns):  # for each tower (by default 1)
+                    device = nn_[0].weight.device if self.message_passing_device is not None else x_i.device
                     for j in range(0, len(x_i), chunk_size):  # chunking for memory efficiency
                         x_i[j:j + chunk_size, i] = nn_(torch.cat(
-                            [x_i[j:j + chunk_size, i], x_j[j:j + chunk_size, i]], dim=-1))
+                            [x_i[j:j + chunk_size, i], x_j[j:j + chunk_size, i]],
+                            dim=-1).to(device)).to(x_i)
 
                         scale, shift = self.edge_encoder(edge_attr[j:j + chunk_size]).chunk(2, dim=-1)
 
                         with torch.amp.autocast(enabled=False,
-                                                device_type='cpu' if x_i.device == 'cpu' else 'cuda'):
+                                                device_type='cpu' if device == 'cpu' else 'cuda'):
                             # this operation is sensitive to precision, so we do it in float
-                            x_i[j:j + chunk_size, i] = (scale.float() * x_i[j:j + chunk_size, i] +
-                                                        shift.float()).to(x_i)
+                            x_i[j:j + chunk_size, i] = (scale.to(x_i).float() * x_i[j:j + chunk_size, i] +
+                                                        shift.to(x_i).float()).to(x_i)
                 y = x_i
         else:
             y = [nn_(h[:, i]) for i, nn_ in enumerate(self.pre_nns)]
@@ -498,6 +518,8 @@ class EdgeMLP(nn.Module):
                 + self.lin_s(x)[edge_index[0]]
                 + self.lin_t(x)[edge_index[1]]
             )
+            edge_attr = self.act(edge_attr)
+            edge_attr = self.lin1(edge_attr)
         else:
             assert not torch.is_grad_enabled(), 'this must be run with torch.no_grad() to avoid memory leaks'
             x_s = self.lin_s(x)
@@ -508,7 +530,7 @@ class EdgeMLP(nn.Module):
                 edge_attr[i:i + chunk_size] = self.lin_e(edge_attr[i:i + chunk_size])
                 edge_attr[i:i + chunk_size] += (x_s[edge_index[0][i:i + chunk_size]]
                                                 + x[edge_index[1][i:i + chunk_size]])
-        edge_attr = self.act(edge_attr)
-        edge_attr = self.lin1(edge_attr)
+                edge_attr[i:i + chunk_size] = self.act(edge_attr[i:i + chunk_size])
+                edge_attr[i:i + chunk_size] = self.lin1(edge_attr[i:i + chunk_size])
 
         return edge_attr

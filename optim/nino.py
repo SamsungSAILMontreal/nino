@@ -33,6 +33,7 @@ class NiNo:
                  period=1000,
                  verbose=1,
                  nino_device=None,
+                 message_passing_device=None,
                  max_steps=10000,
                  amp=False,
                  **kwargs):
@@ -90,7 +91,8 @@ class NiNo:
                 kwargs.update(state_dict['model_args'])
                 print('\n\nkwargs', kwargs)
                 state_dict = state_dict['state_dict']
-            self.meta_model = NiNoModel(**kwargs).eval().to(self.nino_device)
+            self.meta_model = NiNoModel(message_passing_device=message_passing_device, **kwargs).eval().to(
+                self.nino_device)
             if verbose:
                 print(self.meta_model)
 
@@ -144,8 +146,9 @@ class NiNo:
                                                             for p in self._model.parameters()]))
             # can access params via self.base_opt.param_groups, but not trivial for several groups in param_groups
             if self.verbose:
-                print('step %d, add state #{}, mem on {}={:.3f}G'.format(self.step_idx + 1,
+                print('step {}, add state #{}, mem on {}={:.3f}G'.format(self.step_idx + 1,
                                                                          len(self.base_opt.state['states']),
+                                                                         self.nino_device,
                                                                          mem(self.nino_device)), flush=True)
 
         if self.meta_model and len(self.base_opt.state['states']) == self.ctx:
@@ -176,6 +179,8 @@ class NiNo:
                     states, scales = scale_params(states, self.model_dict)
                     self.graph.set_edge_attr(states)
                     self.graph.pyg_graph = self.meta_model(self.graph.pyg_graph.to(self.nino_device), k=self._get_k())
+                    if self.graph.pyg_graph.edge_attr.shape[-1] != 1:
+                        print('\nWARNING: edge_attr.shape[-1] != 1', self.graph.pyg_graph.edge_attr.shape)
                     x = self.graph.to_vector()
                     if torch.isnan(x).any():
                         raise ValueError('NaNs in the predicted parameters')

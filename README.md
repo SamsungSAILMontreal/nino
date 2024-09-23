@@ -43,10 +43,11 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
 ## Updates
 
 - [x] Initial code release with a pretrained NiNo model (see the [`checkpoints`](checkpoints) folder).
-  - [x] `nino.pt` - default model (assume the GPT2 tokenizer)
-  - [x] `nino_no_posw.pt` - no positional encoding for word embeddings (can be used for arbitrary tokenizers)
-  - [x] `nino_h32.pt` - model with hidden size 32 instead of default 128
-  - [ ] WNN checkpoint (coming soon)
+  - [x] `nino.pt` - default NiNo model (assume the GPT2 tokenizer)
+  - [x] `nino_no_posw.pt` - NiNo without positional encoding for word embeddings (can be used for arbitrary models and tokenizers including Llama)
+  - [x] `nino_h32.pt` - NiNo with hidden size 32 instead of default 128
+  - [x] `nino_mlp.pt` - WNN+ model (does not use graphs)
+  - [x] `nino_towers4.pt` - NiNo with 4 towers in the message passing step for better efficiency
 - [x] Neural graphs and evaluation script for convnet tasks.
 - [x] Neural graphs and evaluation script for transformer tasks:
   - [x] GPT2
@@ -77,6 +78,7 @@ model = AutoModelForCausalLM.from_config(...)  # some model
 # any optimizer other than Adam should also be possible to use with NiNo
 opt = NiNo(base_opt=torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2),
            ckpt='checkpoints/nino.pt',
+           message_passing_device=None,  # can use 'cpu' when NiNo is applied to larger models 
            model=model,
            period=1000,
            max_steps=10000)

@@ -35,6 +35,7 @@ class NiNoModel(nn.Module):
                  edge_types=15,
                  lpe=8,  # ignored for mlp
                  chunk_size=10**5,
+                 message_passing_device=None,
                  **kwargs):
         super().__init__()
 
@@ -62,8 +63,8 @@ class NiNoModel(nn.Module):
                              **dict(mlp_kwargs, n_layers=1 if input_layer == 'linear' else 2))
         if self.is_mlp:
             self.edge_mlp = MLP(in_dim=hid,
-                                out_dim=self.max_feat_size * out_dim,
-                                **dict(mlp_kwargs, n_layers=3))
+                                out_dim=out_dim,
+                                **dict(mlp_kwargs, n_layers=4))
         else:
 
             if self.wte_pos_enc:
@@ -73,6 +74,7 @@ class NiNoModel(nn.Module):
                 self.node_proj = MLP(in_dim=max(1, self.lpe + int(1 - self.improved_graph) * self.max_feat_size * ctx),
                                      **dict(mlp_kwargs, n_layers=1 if input_layer == 'linear' else 2))
 
+            final_edge_update = kwargs.pop('final_edge_update', False)
             self.gnn = PNA(in_channels=hid,
                            hidden_channels=hid,
                            num_layers=self.n_msg_layers,
@@ -83,10 +85,11 @@ class NiNoModel(nn.Module):
                            update_edge_attr=True,
                            modulate_edges=True,
                            gating_edges=False,
-                           final_edge_update=False,
+                           final_edge_update=final_edge_update,
                            edge_dim=hid,
                            norm=None,
                            chunk_size=chunk_size,
+                           message_passing_device=message_passing_device,
                            **kwargs)
 
             self.edge_out = MLP(in_dim=hid,
@@ -152,10 +155,35 @@ class NiNoModel(nn.Module):
             edge_attr_res = graphs.edge_attr[:, :, self.ctx - 1]  # last parameter values
 
         edge_types = self.layer_embed(graphs.edge_type.long()) if self.edge_types else 0
+
         if self.is_mlp:
-            graphs.edge_attr = self.fw_split(self.edge_mlp,
-                                             self.fw_split(self.edge_proj, graphs.edge_attr) +
-                                             edge_types.unsqueeze(1))
+
+            chunk_size = len(graphs.edge_attr) if self.chunk_size in [0, -1, None] else self.chunk_size
+            if self.edge_types:
+                edge_types = edge_types.unsqueeze(1).repeat(1, graphs.edge_attr.shape[1], 1)
+                for i in range(0, len(graphs.edge_attr), chunk_size):
+                    edge_types[i:i + chunk_size] = self.edge_proj(
+                        graphs.edge_attr[i:i + chunk_size]) + edge_types[i:i + chunk_size]
+            else:
+                edge_types = self.edge_proj(graphs.edge_attr)
+
+            graphs.edge_attr = edge_types
+            del edge_types
+
+            if self.dms and not self.training:
+                assert k is not None and k >= 1, k
+                fc = self.edge_mlp.fc
+                w = fc[-1].weight.data.clone()
+                b = fc[-1].bias.data.clone()
+                fc[-1].weight.data = fc[-1].weight.data[k - 1:k]
+                fc[-1].bias.data = fc[-1].bias.data[k - 1]
+                fc[-1].out_features = 1
+                graphs.edge_attr = self.fw_split(fc, graphs.edge_attr)
+                fc[-1].weight.data = w
+                fc[-1].bias.data = b
+            else:
+                graphs.edge_attr = self.fw_split(self.edge_mlp, graphs.edge_attr)
+
         else:
             x_lpe = self.fw_split(self.node_proj, graphs.pos) if self.lpe else 0
             wte_pos_emb = self.wte_pos_enc_layer(graphs.pos_w) if self.wte_pos_enc else 0
