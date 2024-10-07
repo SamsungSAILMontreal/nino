@@ -144,7 +144,7 @@ class NiNoModel(nn.Module):
     def forward(self, graphs, k=None):
         """
         Forward pass of the model.
-        :param graphs: pytorch geometric batch of graphs (can be multiple models corresponding to disconnected graphs)
+        :param graphs: pytorch geometric batch of graphs (can be multiple models stacked as disconnected graphs)
         :param k: number of steps to predict into the future (only used for dms during inference)
         :return: graphs with updated edge (and node) features
         """
@@ -154,37 +154,39 @@ class NiNoModel(nn.Module):
         if self.residual:
             edge_attr_res = graphs.edge_attr[:, :, self.ctx - 1]  # last parameter values
 
-        edge_types = self.layer_embed(graphs.edge_type.long()) if self.edge_types else 0
-
         if self.is_mlp:
 
+            # By using chunking in th MLP, we avoid storing the full edge_attr tensor (n_params, feat_dim) in memory
             chunk_size = len(graphs.edge_attr) if self.chunk_size in [0, -1, None] else self.chunk_size
-            if self.edge_types:
-                edge_types = edge_types.unsqueeze(1).repeat(1, graphs.edge_attr.shape[1], 1)
-                for i in range(0, len(graphs.edge_attr), chunk_size):
-                    edge_types[i:i + chunk_size] = self.edge_proj(
-                        graphs.edge_attr[i:i + chunk_size]) + edge_types[i:i + chunk_size]
-            else:
-                edge_types = self.edge_proj(graphs.edge_attr)
-
-            graphs.edge_attr = edge_types
-            del edge_types
 
             if self.dms and not self.training:
                 assert k is not None and k >= 1, k
+                # avoid predicting for all the future steps during inference to save computation
+                # only predict for k-th step
                 fc = self.edge_mlp.fc
                 w = fc[-1].weight.data.clone()
                 b = fc[-1].bias.data.clone()
                 fc[-1].weight.data = fc[-1].weight.data[k - 1:k]
                 fc[-1].bias.data = fc[-1].bias.data[k - 1]
                 fc[-1].out_features = 1
-                graphs.edge_attr = self.fw_split(fc, graphs.edge_attr)
+            else:
+                fc = self.edge_mlp.fc
+
+            device = next(fc[0].parameters()).device
+            for i in range(0, len(graphs.edge_attr), chunk_size):
+                graphs.edge_attr[i:i + chunk_size, :, :1] = self.fw_split(fc, self.edge_proj(
+                    graphs.edge_attr[i:i + chunk_size].to(device)) + (
+                    self.layer_embed(graphs.edge_type[i:i + chunk_size].to(device)).unsqueeze(1)
+                    if self.edge_types else 0)).to(graphs.edge_attr.device)
+            graphs.edge_attr = graphs.edge_attr[:, :, :1]
+
+            if self.dms and not self.training:
                 fc[-1].weight.data = w
                 fc[-1].bias.data = b
-            else:
-                graphs.edge_attr = self.fw_split(self.edge_mlp, graphs.edge_attr)
 
         else:
+            edge_types = self.layer_embed(graphs.edge_type) if self.edge_types else 0
+
             x_lpe = self.fw_split(self.node_proj, graphs.pos) if self.lpe else 0
             wte_pos_emb = self.wte_pos_enc_layer(graphs.pos_w) if self.wte_pos_enc else 0
             if self.lpe:

@@ -7,18 +7,23 @@
 # Based on https://github.com/huggingface/transformers/blob/main/examples/pytorch/language-modeling/run_clm_no_trainer.py
 
 """
-Example usage (NiNo's checkpoint checkpoints/nino.pt is used by default):
+Example usage:
 
     python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
-     --num_train_epochs 4 --layers 3 --dim 64 --heads 4
+     --num_train_epochs 4 --layers 3 --dim 64 --heads 4 --nino_ckpt checkpoints/nino.pt
 
-To train a Llama3-based model with Grouped-Query Attention:
+To train a Llama3-based model with Grouped-Query Attention using checkpoints/nino_no_posw.pt in this case,
+since the tokenizer is different from GPT2 used to train NiNo (checkpoints/nino.pt):
 
     python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
-     --num_train_epochs 4 --layers 3 --dim 64 --heads 4 --heads_key_value 2
-     --tokenizer_name meta-llama/Meta-Llama-3.1-8B --login $HUGGING_FACE_TOKEN
+     --num_train_epochs 4 --layers 3 --dim 64 --heads 4 --heads_key_value 2 \
+     --tokenizer_name meta-llama/Meta-Llama-3.1-8B --hf_login $HUGGING_FACE_TOKEN \
+     --nino_ckpt checkpoints/nino_no_posw.pt
 
 where $HUGGING_FACE_TOKEN is your Hugging Face token.
+
+See more examples in the README.md file.
+
 """
 
 #!/usr/bin/env python
@@ -50,11 +55,9 @@ import gc
 import logging
 import math
 import time
-import subprocess
 import numpy as np
 import os
-import platform
-import torch.backends.cudnn as cudnn
+import json
 from pathlib import Path
 from datetime import timedelta
 import datasets
@@ -62,9 +65,8 @@ import torch
 from itertools import chain
 from accelerate import Accelerator, DistributedType, InitProcessGroupKwargs
 from accelerate.logging import get_logger
-# from accelerate.utils import set_seed
 from datasets import load_dataset
-from huggingface_hub import Repository, create_repo, login
+from huggingface_hub import login, HfApi
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -82,7 +84,7 @@ from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
 from optim import NiNo
-from utils import set_seed, mem
+from utils import set_seed, mem, get_env_args
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -119,7 +121,7 @@ def parse_args():
     parser.add_argument(
         "--nino_ckpt",
         type=str,
-        default="checkpoints/nino.pt",
+        default=None,
         help="path to the NiNo checkpoint.",
     )
     parser.add_argument(
@@ -381,30 +383,7 @@ def parse_args():
     if args.push_to_hub:
         assert args.output_dir is not None, "Need an `output_dir` to create a repo when `--push_to_hub` is passed."
 
-    print('\nEnvironment:')
-    env = {}
-    try:
-        # print git commit to ease code reproducibility
-        env['git commit'] = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
-    except Exception as e:
-        env['git commit'] = str(e)
-
-    env['hostname'] = platform.node()
-    env['torch'] = torch.__version__
-    env['cuda available'] = torch.cuda.is_available()
-    env['cudnn enabled'] = cudnn.enabled
-    env['cuda version'] = torch.version.cuda
-    env['start time'] = time.strftime('%Y%m%d-%H%M%S')
-    for x, y in env.items():
-        print('{:20s}: {}'.format(x[:20], y))
-
-    args.env = env
-    print('\nScript Arguments:', flush=True)
-    args_var = vars(args)
-    for x in sorted(args_var.keys()):
-        y = args_var[x]
-        print('{:20s}: {}'.format(x[:20], y))
-    print('\n', flush=True)
+    args = get_env_args(args)
     return args
 
 
@@ -455,16 +434,15 @@ def main():
             repo_name = args.hub_model_id
             if repo_name is None:
                 repo_name = Path(args.output_dir).absolute().name
-            # Create repo and retrieve repo_id
-            repo_id = create_repo(repo_name, exist_ok=True, token=args.hub_token).repo_id
-            # Clone repo locally
-            repo = Repository(args.output_dir, clone_from=repo_id, token=args.hub_token)
+                # Create repo and retrieve repo_id
+                api = HfApi()
+                repo_id = api.create_repo(repo_name, exist_ok=True, token=args.hub_token).repo_id
 
-            with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
-                if "step_*" not in gitignore:
-                    gitignore.write("step_*\n")
-                if "epoch_*" not in gitignore:
-                    gitignore.write("epoch_*\n")
+                with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
+                    if "step_*" not in gitignore:
+                        gitignore.write("step_*\n")
+                    if "epoch_*" not in gitignore:
+                        gitignore.write("epoch_*\n")
         elif args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
@@ -561,9 +539,8 @@ def main():
 
         if args.tokenizer_name == 'gpt2':
             print('GPT2Config:\t', 'dim', dim, 'layers', layers, 'heads', heads, flush=True)
-            # config = GPT2Config(n_embd=dim, n_layer=layers, n_head=heads)
             config.n_embd = dim
-            config.layers = layers
+            config.n_layer = layers
             config.n_head = heads
 
         elif args.tokenizer_name.lower().find('llama') >= 0:
@@ -747,7 +724,7 @@ def main():
                      ckpt=args.nino_ckpt,
                      model=model,
                      period=args.period,
-                     max_steps=args.max_train_steps,
+                     max_train_steps=args.max_train_steps,
                      nino_device=args.nino_device,
                      message_passing_device=args.nino_mp_device,
                      amp=args.mixed_precision != 'no',
@@ -775,35 +752,8 @@ def main():
         experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
         accelerator.init_trackers("clm_no_trainer", experiment_config)
 
-    # Train!
-    total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
-
-    logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
-    logger.info(f"  Num Epochs = {args.num_train_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {args.max_train_steps}")
-    # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
-    starting_epoch = 0
-    total_steps = 0
-    # Potentially load in the weights and states from a previous save
-    if args.resume_from_checkpoint:
-        raise NotImplementedError("Resume from checkpoint is not implemented yet.")
-
-    # update the progress_bar if load from checkpoint
-    progress_bar.update(total_steps)
-
-    print(model,
-          '\nTotal size={:.2f}M params'.format(n_params / 10 ** 6),
-          '\nTotal param norm={:.4f}'.format(
-          torch.norm(torch.stack([torch.norm(p.data, 2) for p in model.parameters()]), 2).item()))
-
-
     def get_eval_loss(model, epoch_, step_, total_step_):
-        print('running eval... mem=%.4f ' % mem(accelerator.device), flush=True)
+        print('running eval... mem=%.4fG ' % mem(accelerator.device), flush=True)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gc.collect()
@@ -822,12 +772,101 @@ def main():
             eval_loss_ = float("inf")
             perplexity_ = float("inf")
 
+        n = len(loss_)
+        if torch.cuda.is_available():
+            loss_ = None
+            torch.cuda.empty_cache()
+            gc.collect()  # some unclear memory leak, doing manual clean up
+
         print(f"epoch {epoch_ + 1}, step {step_ + 1}, total step {total_step_ + 1}: "
                     f"perplexity: {perplexity_} eval_loss: {eval_loss_}, "
-                    f"eval batches: {len(loss_)}", flush=True)
+                    f"eval batches: {n}", flush=True)
         return eval_loss_, perplexity_
 
-    eval_loss = None
+    # Train!
+    total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+
+    logger.info("***** Running training *****")
+    logger.info(f"  Num examples = {len(train_dataset)}")
+    logger.info(f"  Num Epochs = {args.num_train_epochs}")
+    logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+    logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    # Only show the progress bar once on each machine.
+    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
+    starting_epoch = 0
+    completed_steps = 0
+    resume_step = None
+    # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint:
+        if not os.path.exists(args.resume_from_checkpoint):
+            print(f"\nWARNING: Resume path {args.resume_from_checkpoint} not found")
+        else:
+            if args.resume_from_checkpoint is not None or args.resume_from_checkpoint != "":
+                checkpoint_path = args.resume_from_checkpoint
+                path = os.path.basename(args.resume_from_checkpoint)
+            else:
+                # Get the most recent checkpoint
+                dirs = [f.name for f in os.scandir(os.getcwd()) if f.is_dir()]
+                dirs.sort(key=os.path.getctime)
+                path = dirs[-1]  # Sorts folders by date modified, most recent checkpoint is the last
+                checkpoint_path = path
+                path = os.path.basename(checkpoint_path)
+
+            accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
+            accelerator.load_state(checkpoint_path)
+            # Extract `epoch_{i}` or `step_{i}`
+            training_difference = os.path.splitext(path)[0]
+
+            if "epoch" in training_difference:
+                starting_epoch = int(training_difference.replace("epoch_", "")) + 1
+                completed_steps = starting_epoch * num_update_steps_per_epoch
+            else:
+                # need to multiply `gradient_accumulation_steps` to reflect real steps
+                resume_step = int(training_difference.replace("step_", "")) * args.gradient_accumulation_steps
+                starting_epoch = resume_step // len(train_dataloader)
+                completed_steps = resume_step // args.gradient_accumulation_steps
+                resume_step -= starting_epoch * len(train_dataloader)
+
+            optimizer.step_idx = completed_steps
+            print(f'Model and opt loaded from {checkpoint_path}, '
+                  f'starting_epoch={starting_epoch}, resume_step={resume_step}, total_step={optimizer.step_idx}')
+            if not args.skip_eval:
+                eval_loss, eval_ppl = get_eval_loss(model, starting_epoch, resume_step, completed_steps)
+                if args.target is not None and eval_ppl <= args.target:
+                    print("\nModel already reached target of {:.2f}<={:.2f}. Exiting...".format(
+                        eval_ppl, args.target))
+                    return
+
+    # update the progress_bar if load from checkpoint
+    progress_bar.update(completed_steps)
+
+    print(model,
+          '\nTotal size={:.2f}M params'.format(n_params / 10 ** 6),
+          '\nTotal param norm={:.4f}'.format(
+          torch.norm(torch.stack([torch.norm(p.data, 2) for p in model.parameters()]), 2).item()))
+
+    def save(step_idx=None):
+        if (accelerator.is_main_process and args.output_dir not in [None, '', 'None', 'none'] and
+                accelerator.sync_gradients):
+            accelerator.wait_for_everyone()
+            if step_idx:
+                output_dir = os.path.join(args.output_dir, f"step_{step_idx}")
+            else:
+                output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+
+            if not os.path.isdir(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            accelerator.save_state(output_dir)
+
+            print(f'Model and optimizer saved to {output_dir} at '
+                  f'epoch={epoch}, '
+                  f'step={step}, '
+                  f'completed_steps={completed_steps}', flush=True)
+            if step_idx is None:
+                tokenizer.save_pretrained(args.output_dir)
+
     eval_losses = {}
     losses = []
     done = False
@@ -837,17 +876,22 @@ def main():
             model.train()
             if args.with_tracking:
                 total_loss = 0
-            for step, batch in enumerate(train_dataloader):
+            if args.resume_from_checkpoint and epoch == starting_epoch and resume_step is not None:
+                # We skip the first `n` batches in the dataloader when resuming from a checkpoint
+                active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
+            else:
+                active_dataloader = train_dataloader
+            for step, batch in enumerate(active_dataloader):
 
-                if not args.skip_eval and (total_steps + 1) % args.eval_freq == 0 and total_steps not in eval_losses:
+                if not args.skip_eval and (completed_steps + 1) % args.eval_freq == 0 and completed_steps not in eval_losses:
                     # eval before the step because after the NiNo step the performance can drop for a few iterations
-                    eval_loss, eval_ppl = get_eval_loss(model, epoch, step, total_steps)
-                    eval_losses[total_steps] = eval_loss.item()
+                    eval_loss, eval_ppl = get_eval_loss(model, epoch, step, completed_steps)
+                    eval_losses[completed_steps] = eval_loss.item()
                     if args.target is not None and eval_ppl <= args.target:
-                        print('\nReached target perplexity of {:.2f}%<={:.2f} in {} steps '
+                        print('\nReached target perplexity of {:.2f}<={:.2f} in {} steps '
                               '({:.4f} seconds)'.format(eval_ppl,
                                                         args.target,
-                                                        optimizer.step_idx,
+                                                        completed_steps,
                                                         time.time() - start_time))
                         done = True
                         break
@@ -863,6 +907,7 @@ def main():
                         closure = None
                         losses.append(loss.item())
                     else:
+                        # prediction step
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()  # manually free the memory before the NiNo step
                         def closure():
@@ -877,7 +922,7 @@ def main():
                             torch.cuda.empty_cache()  # manually free the memory after the NiNo step
 
                     if np.isnan(losses[-1]):
-                        raise ValueError("NaN detected!", 'loss', losses[-1])
+                        raise ValueError("NaN detected!", "loss", losses[-1])
 
                     lr_scheduler.step()
                     optimizer.zero_grad()
@@ -885,40 +930,33 @@ def main():
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
-                    total_steps += 1
+                    completed_steps += 1
 
-                if isinstance(checkpointing_steps, int) and args.output_dir is not None:
-                    if step % checkpointing_steps == 0 or step in [0, len(train_dataloader) - 1]:
-                        print('saving checkpoint at epoch %d, step %d with loss %.4f' % (epoch, step, loss.item()),
-                              flush=True)
-                        state_dict = {'state_dict': model.state_dict(),
-                                      'epoch': epoch,
-                                      'step': step,
-                                      'loss': loss.item(),
-                                      'eval_loss': eval_loss,
-                                      'config': config,
-                                      }
-
-                        checkpoint_path = os.path.join(args.output_dir, "checkpoint.pt")
-                        torch.save(state_dict, checkpoint_path)
-                        checkpoint_path_interm = checkpoint_path.replace('.pt',
-                                                                         '_epoch%d_step%d.pt' % (epoch + 1, step + 1))
-                        torch.save(state_dict, checkpoint_path_interm)
-                        if accelerator.is_main_process:
-                            tokenizer.save_pretrained(args.output_dir)
-
-                if total_steps >= args.max_train_steps:
+                if isinstance(checkpointing_steps, int) and completed_steps % checkpointing_steps == 0:
+                    save(completed_steps)
+                if completed_steps >= args.max_train_steps:
                     done = True
-
                 if done:
                     break
             if done:
                 break
 
+    # eval at the end of training
+    if not args.skip_eval and completed_steps not in eval_losses:
+        eval_loss, eval_ppl = get_eval_loss(model, epoch, step, completed_steps)
+        eval_losses[completed_steps] = eval_loss.item()
+        if args.target is not None and eval_ppl <= args.target:
+            print('\nReached target perplexity of {:.2f}<={:.2f} in {} steps '
+                  '({:.4f} seconds)'.format(eval_ppl,
+                                            args.target,
+                                            completed_steps,
+                                            time.time() - start_time))
+
     if args.with_tracking:
         accelerator.end_training()
 
     if args.output_dir is not None:
+        save(completed_steps)
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
         unwrapped_model.save_pretrained(
@@ -927,7 +965,15 @@ def main():
         if accelerator.is_main_process:
             tokenizer.save_pretrained(args.output_dir)
             if args.push_to_hub:
-                repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
+                api.upload_folder(
+                    commit_message="End of training",
+                    folder_path=args.output_dir,
+                    repo_id=repo_id,
+                    repo_type="model",
+                    token=args.hub_token,
+                )
+            with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+                json.dump({"eval_losses": eval_losses}, f)
 
 
 if __name__ == "__main__":

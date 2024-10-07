@@ -6,7 +6,6 @@
 
 """
 Neural graph for Llama style transformers.
-This is experimental code that has not been well tested and was not used in the NiNo paper.
 
 To test the NeuralGraph class with a Llama model, run:
 

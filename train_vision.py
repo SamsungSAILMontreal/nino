@@ -7,9 +7,11 @@
 # Based on https://github.com/pytorch/examples/blob/main/mnist/main.py
 
 """
-Example usage (NiNo's checkpoint checkpoints/nino.pt is used by default):
+Example usage:
 
-    python train_vision.py --task C10-32
+    python train_vision.py --task C10-32 --nino_ckpt checkpoints/nino.pt
+
+See more examples in the README.md file.
 
 """
 
@@ -17,17 +19,13 @@ import argparse
 import os.path
 
 import numpy as np
-import platform
-import subprocess
 import time
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-import torchvision
 from torchvision import datasets, transforms
-import torch.backends.cudnn as cudnn
 from optim import NiNo
-from utils import set_seed, Net, TASKS, mem
+from utils import set_seed, Net, TASKS, mem, get_env_args
 
 
 def test(model, data, target, verbose=0):
@@ -46,49 +44,26 @@ def test(model, data, target, verbose=0):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch training with predicting future parameters using NiNo')
-    parser.add_argument('--nino_ckpt', type=str, default='checkpoints/nino.pt')
+    parser.add_argument('--nino_ckpt', type=str, default=None)
     parser.add_argument('--task', type=str, default='FM-16', help='see utils/vision.py for all the tasks')
     parser.add_argument('--lr', type=float, default=None)
     parser.add_argument('--wd', type=float, default=0)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--max_steps', type=int, default=10000,
+    parser.add_argument('--max_train_steps', type=int, default=10000,
                         help='maximum number of iterations to train, early stopping when target is reached')
     parser.add_argument('--period', type=int, default=1000,
-                        help='number of base opt steps after which to apply NiNo')
+                        help='number of base optimizer steps after which to apply NiNo')
     parser.add_argument('--seed', type=int, default=1000, help='random seed')
-    parser.add_argument('--verbose', type=int, default=0)
-    parser.add_argument('--save_path', type=str, default=None)
+    parser.add_argument('--output_dir', type=str, default=None)
+    parser.add_argument('--checkpointing_steps', type=int, default=None)
+    parser.add_argument('--resume_from_checkpoint', type=str, default=None)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--verbose', type=int, default=0)
     parser.add_argument('--log_interval', type=int, default=100,
                         help='how many batches to wait before logging training status')
     args = parser.parse_args()
-
-    print('\nEnvironment:')
-    env = {}
-    try:
-        # print git commit to ease code reproducibility
-        env['git commit'] = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
-    except Exception as e:
-        env['git commit'] = str(e)
-
-    env['hostname'] = platform.node()
-    env['torch'] = torch.__version__
-    env['torchvision'] = torchvision.__version__
-    env['cuda available'] = torch.cuda.is_available()
-    env['cudnn enabled'] = cudnn.enabled
-    env['cuda version'] = torch.version.cuda
-    env['start time'] = time.strftime('%Y%m%d-%H%M%S')
-    for x, y in env.items():
-        print('{:20s}: {}'.format(x[:20], y))
-
-    args.env = env
-    print('\nScript Arguments:', flush=True)
-    args_var = vars(args)
-    for x in sorted(args_var.keys()):
-        y = args_var[x]
-        print('{:20s}: {}'.format(x[:20], y))
-    print('\n', flush=True)
+    args = get_env_args(args)
     return args
 
 
@@ -120,44 +95,91 @@ def main():
     set_seed(args.seed)
     generator = torch.Generator()
     train_kwargs['generator'] = generator
-    train_loader = torch.utils.data.DataLoader(
-        train_data, **train_kwargs)
+    train_loader = torch.utils.data.DataLoader(train_data, **train_kwargs)
     test_loader = torch.utils.data.DataLoader(
         eval(f"datasets.{task['dataset']}('../data', train=False, download=True, transform=transform)"), **test_kwargs)
 
     # preload the test data to avoid overheads of loading them every time for evaluation
-    for data_eval, target_eval in test_loader:
-        data_eval, target_eval = data_eval.to(device, non_blocking=True), target_eval.to(device, non_blocking=True)
-        break  # only one big batch is expected
-
+    data_eval, target_eval = next(iter(test_loader))
+    data_eval, target_eval = data_eval.to(device, non_blocking=True), target_eval.to(device, non_blocking=True)
+    
     set_seed(args.seed)  # set the seed again to make initial weights easily reproducible
     model = Net(**task['net_args']).to(device)
-    print(model, 'params', sum(p.numel() for p in model.parameters()),
+    print(model,
+          'params', sum({p.data_ptr(): p.numel() for p in model.parameters()}.values()),
           'total param norm',
           torch.norm(torch.stack([torch.norm(p.data, 2) for p in model.parameters()]), 2).item())
 
     lr = args.lr if args.lr is not None else task['lr']
-    # create a NiNo-based opt with AdamW as a base optimizer
-    opt = NiNo(base_opt=optim.AdamW(model.parameters(), lr=lr, weight_decay=args.wd),
-               ckpt=args.nino_ckpt,
-               model=model,
-               period=args.period,
-               max_steps=args.max_steps,
-               verbose=args.verbose)
+    # create a NiNo-based optimizer with AdamW as a base optimizer
+    optimizer = NiNo(base_opt=optim.AdamW(model.parameters(), lr=lr, weight_decay=args.wd),
+                     ckpt=args.nino_ckpt,
+                     model=model,
+                     period=args.period,
+                     max_train_steps=args.max_train_steps,
+                     verbose=args.verbose)
 
-    epochs = int(np.ceil(args.max_steps / len(train_loader)))
+    def save(step_idx=None):
+        if args.output_dir not in [None, '', 'None', 'none']:
+            if not os.path.isdir(args.output_dir):
+                os.mkdir(args.output_dir)
+            checkpoint_path = os.path.join(args.output_dir,
+                                           f'step_{step_idx}.pt' if step_idx else 'ckpt.pt')
+            torch.save({
+                'model': model.state_dict(),
+                'optimizer': optimizer.base_opt.state_dict(),  # can save the optimizer state with the history of the past states
+                'epoch': epoch,
+                'step': step,
+                'completed_steps': optimizer.step_idx,
+                'model_args': task['net_args'],
+                'args': args},
+                checkpoint_path)
+            print(f'Model and optimizer saved to {checkpoint_path} at '
+                  f'epoch={epoch}, '
+                  f'step={step}, '
+                  f'completed_steps={optimizer.step_idx}', flush=True)
+
+    starting_epoch = 0
+    resume_step = 0
+    if args.resume_from_checkpoint:
+        if not os.path.isfile(args.resume_from_checkpoint):
+            print(f"\nWARNING: Resume path {args.resume_from_checkpoint} not found")
+        else:
+            state_dict = torch.load(args.resume_from_checkpoint, map_location=device)
+            model.load_state_dict(state_dict['model'])
+            optimizer.base_opt.load_state_dict(state_dict['optimizer'])
+            optimizer.step_idx = state_dict['completed_steps']
+            starting_epoch = state_dict['epoch']
+            resume_step = state_dict['step'] + 1
+            if resume_step == len(train_loader):
+                starting_epoch += 1
+                resume_step = 0
+            print(f'Model and optimizer loaded from {args.resume_from_checkpoint}, '
+                  f'starting_epoch={starting_epoch}, '
+                  f'resume_step={resume_step}, '
+                  f'completed_steps={optimizer.step_idx}')
+            scores = test(model, data_eval, target_eval, verbose=args.verbose)
+            if scores['acc'] >= task['target']:
+                print("\nModel already reached target of {:.2f}%>={:.2f}%. Exiting...".format(
+                    scores['acc'], task["target"]))
+                return
+
+    epochs = int(np.ceil(args.max_train_steps / len(train_loader)))
     losses = []
-
     start_time = time.time()
     done = False
-    for epoch in range(epochs):
+    print(f'\nTraining {args.task} with {len(train_loader)} batches per epoch for {epochs} epochs')
+    for epoch in range(starting_epoch, epochs):
         set_seed(args.seed + epoch)  # set the seed again to make batches the same for nino and adam
         generator.manual_seed(args.seed + epoch)
 
-        for t, (data, target) in enumerate(train_loader):
+        for step, (data, target) in enumerate(train_loader, start=resume_step):
+            if step >= len(train_loader) or optimizer.step_idx >= args.max_train_steps:
+                break
+
             model.train()
             data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
-            if opt.need_grads:
+            if optimizer.need_grads:
                 loss = F.cross_entropy(model(data), target)
                 loss.backward()  # only compute gradients for the base optimizer
                 closure = None
@@ -168,45 +190,38 @@ def main():
                     with torch.no_grad():
                         return F.cross_entropy(model(data), target)
 
-            loss_ = opt.step(closure)  # base_opt step or nowcast params every args.period steps using NiNo
-            opt.zero_grad()
+            loss_ = optimizer.step(closure)  # base_opt step or nowcast params every args.period steps using NiNo
+            optimizer.zero_grad()
             if loss_ is not None:
                 losses.append(loss_.item())
 
             scores = test(model, data_eval, target_eval, verbose=args.verbose)
 
-            if opt.step_idx % args.log_interval == 0:
+            if optimizer.step_idx % args.log_interval == 0:
                 print('Train {:04d}/{}: \tTrain loss: {:.4f} \tVal loss: {:.4f} \tVal acc: {:.2f}% '
                       '\t(sec/b={:.3f}, {}={:.3f}G)'.format(
-                       opt.step_idx, args.max_steps, losses[-1], scores['loss'], scores['acc'],
-                       (time.time() - start_time) / opt.step_idx, device, mem(device)))
+                    optimizer.step_idx,
+                    args.max_train_steps, losses[-1], scores['loss'], scores['acc'],
+                    (time.time() - start_time) / optimizer.step_idx, device, mem(device)))
+
+            if args.checkpointing_steps is not None and optimizer.step_idx % args.checkpointing_steps == 0:
+                save(optimizer.step_idx)  # save the model every args.checkpointing_steps steps
 
             if scores['acc'] >= task['target']:
                 print('\nReached target accuracy of {:.2f}%>={:.2f}% in {} steps '
                       '({:.4f} seconds)'.format(scores['acc'],
                                                 task["target"],
-                                                opt.step_idx,
+                                                optimizer.step_idx,
                                                 time.time() - start_time))
                 done = True
-            if opt.step_idx >= args.max_steps:
+            if optimizer.step_idx >= args.max_train_steps:
                 done = True
             if done:
                 break
+        resume_step = 0  # reset the start step for the next epoch
         if done:
             break
-
-    if args.save_path not in [None, '', 'None', 'none']:
-
-        if not os.path.isdir(args.save_path):
-            os.mkdir(args.save_path)
-        save_path = os.path.join(args.save_path, 'ckpt.pt')
-        torch.save({
-            'model': model.state_dict(),
-            'opt': opt.base_opt.state_dict(),  # can save the optimizer state with the history of the past states
-            'args': args},
-            save_path)
-        print('Model and opt saved to', save_path)
-
+    save(optimizer.step_idx)  # save the final model
 
 if __name__ == '__main__':
     main()

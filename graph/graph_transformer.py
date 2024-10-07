@@ -31,6 +31,7 @@ class NeuralGraphTransformer(NeuralGraph):
                  num_key_value_heads=None,
                  pos_w=True,
                  wte_sampling_size=None,
+                 verbose=True,
                  ):
         """
         Constructs a neural graph for GPT style transformers.
@@ -45,8 +46,9 @@ class NeuralGraphTransformer(NeuralGraph):
                 (True in nn.Linear, nn.Conv2d, but False in GPT2 layers)
         :param num_heads: number of attention heads in the transformer
         :param num_key_value_heads: number of key/value heads in the transformer (for Grouped-Query Attention)
-        :param wte_sampling_size: used when wte layer params in x are subsampled
         :param pos_w: whether to include positional embeddings for wte layers of transformers in the neural graph
+        :param wte_sampling_size: used when wte layer params in x are subsampled (for meta-training)
+        :param verbose: whether to print the graph statistics
         """
         assert num_heads is not None, 'num_heads must be provided for transformers!'
         self.num_heads = num_heads
@@ -59,7 +61,8 @@ class NeuralGraphTransformer(NeuralGraph):
                          max_feat_size=max_feat_size,
                          use_param_types=use_param_types,
                          self_loops=self_loops,
-                         model_first_dim_out=model_first_dim_out)
+                         model_first_dim_out=model_first_dim_out,
+                         verbose=verbose)
 
     def _param_type(self, name, sz):
         """ Returns the type of the parameter based on its name and shape.

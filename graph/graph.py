@@ -34,17 +34,19 @@ class NeuralGraph:
                  max_feat_size=None,
                  use_param_types=True,
                  self_loops=True,
-                 model_first_dim_out=True):
+                 model_first_dim_out=True,
+                 verbose=False):
         """
         Generic neural graph constructor for a model with fc/conv layers.
         :param model_dict: list obtained using model.named_parameters() or list/dict of (name, shape) tuples
-        :param lpe: number of laplacian eigenvectors for positional encoding
+        :param lpe: number of laplacian eigenvectors for positional encoding or tensor/ndarray of shape (num_nodes, lpe)
         :param max_feat_size: maximum parameter feature size such as 3x3=9 for conv,
                 so that total node/edge feature size is max_feat_size * state_dim.
         :param use_param_types: whether to use the parameter types in the neural graph
         :param self_loops: whether to add self-loops to the neural graph (useful to better propagate node/edge features)
         :param model_first_dim_out: whether the model's first dimension is the output dimension
                 (True in nn.Linear, nn.Conv2d, but False in GPT2 layers)
+        :param verbose: whether to print additional information
         """
 
         self._model_dict = {
@@ -54,14 +56,23 @@ class NeuralGraph:
 
         self.use_param_types = use_param_types
         self.max_feat_size = 1 if max_feat_size in ['none', 'None', None] else max_feat_size
-        self.lpe = lpe
         self.self_loops = self_loops
         self.model_first_dim_out = model_first_dim_out
+        self.verbose = verbose
 
         self._model_dict = self._update_model_dict()
         self._construct()
-        if self.lpe:
-            self._add_lpe()
+
+        if isinstance(lpe, (np.ndarray, torch.Tensor)):
+            assert len(lpe.shape) == 2, (f'LPE should be a 2D tensor of shape (num_nodes, num of features) '
+                                         f'instead of {lpe.shape}')
+            self.pyg_graph.pos = lpe.to(self.pyg_graph.edge_index.device)
+            self.lpe = lpe.shape[1]
+        else:
+            self.lpe = lpe
+            if self.lpe:
+                self._add_lpe()
+
         if self.pyg_graph.contains_isolated_nodes():
             print('\nWARNING: isolated nodes found, which indicates that the neural graph '
                   'is likely constructed incorrectly\n')
@@ -201,6 +212,8 @@ class NeuralGraph:
         transform = Compose(transform + [ToUndirected(),
                                          AddLaplacianEigenvectorPE(k=self.lpe, is_undirected=True)])
         device = self.pyg_graph.edge_index.device
+        if self.verbose:
+            print('Computing Laplacian positional encoding (LPE)...')
         self.pyg_graph.pos = transform(self.pyg_graph.to('cpu')).laplacian_eigenvector_pe.to(device)
 
     def _get_weight(self, states, offset, name, sz):
@@ -226,6 +239,10 @@ class NeuralGraph:
         elif states.dim() == 1:
             states = states.unsqueeze(1)
         assert states.dim() == 2, states.shape
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print('creating edge_attr with shape', (self.pyg_graph.edge_index.shape[1],
+                                                self.max_feat_size * states.shape[1]), states.device, flush=True)
         self.pyg_graph.edge_attr = zeros(self.pyg_graph.edge_index.shape[1],
                                          self.max_feat_size * states.shape[1]).to(states)
         self._n_params = len(states)
@@ -413,13 +430,14 @@ class NeuralGraph:
 def run_test(model, graph, name=''):
     print(model)
     print('params:', sum({p.data_ptr(): p.numel() for p in model.parameters()}.values()))
-    print(f'NeuralGraph for {name.upper()}:')
-    print('num_nodes', graph.pyg_graph.num_nodes)
-    print('num_edges', graph.pyg_graph.num_edges)
-    print('contains_self_loops', graph.pyg_graph.contains_self_loops())
+    print(f'\nNeuralGraph for {name.upper()}:')
+    print('num_nodes:', graph.pyg_graph.num_nodes)
+    print('num_edges:', graph.pyg_graph.num_edges)
+    print('contains_self_loops:', graph.pyg_graph.contains_self_loops())
     if graph.lpe:
-        print('pos', graph.pyg_graph.pos.shape)
-    print('edge_index', graph.pyg_graph.edge_index.shape)
+        print('pos (LPE):', graph.pyg_graph.pos.shape)
+    print('edge_index:', graph.pyg_graph.edge_index.shape)
+
     graph.visualize(fig_size=(15, 15), path=f'./results/{name}_')
     params = torch.cat([p.data.flatten() for n, p in model.named_parameters()])
     graph.set_edge_attr([params, 2 * params])  # add the second state for debugging

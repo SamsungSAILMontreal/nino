@@ -10,7 +10,7 @@
 
 [marktechpost](https://www.marktechpost.com/2024/09/17/nino-a-novel-machine-learning-approach-to-accelerate-neural-network-training-through-neuron-interaction-and-nowcasting/)
 
-## Intro
+# Intro
 
 **Neuron interaction and Nowcasting (NiNo) model** 
 
@@ -28,8 +28,7 @@ Adam without and with nowcasting using our NiNo model on a language task that Ni
 <figure> <img src="figs/fig_intro.png" height="250"></figure>
 
 
-
-## Requirements
+# Requirements
 
 The experiments from our paper can be run using a single GPU with <= 80GB of memory.
 
@@ -40,29 +39,31 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
 - datasets
 - other optional dependencies (networkx, pydot)
 
-## Updates
+# Updates
 
 - [x] Initial code release with a pretrained NiNo model (see the [`checkpoints`](checkpoints) folder).
   - [x] `nino.pt` - default NiNo model (assume the GPT2 tokenizer)
   - [x] `nino_no_posw.pt` - NiNo without positional encoding for word embeddings (can be used for arbitrary models and tokenizers including Llama)
   - [x] `nino_h32.pt` - NiNo with hidden size 32 instead of default 128
   - [x] `nino_mlp.pt` - WNN+ model (does not use graphs)
-  - [x] `nino_towers4.pt` - NiNo with 4 towers in the message passing step for better efficiency
+  - [x] `nino_mlp_h32.pt` - WNN+ model (does not use graphs), with hidden size 32 instead of default 128
+  - [x] `nino_towers4.pt` - NiNo with 4 towers in the message passing step for better efficiency (*not part of the paper*)
 - [x] Neural graphs and evaluation script for convnet tasks.
 - [x] Neural graphs and evaluation script for transformer tasks:
   - [x] GPT2
-  - [x] BERT (experimental code)
+  - [x] BERT (experimental code, *not part of the paper*)
   - [x] Llama (experimental code, see a graph for a smaller variant of `meta-llama/Meta-Llama-3.1-8B` in the [`results`](results) folder)
-  - [x] Vision Transformer (experimental code)
+  - [x] Vision Transformer (experimental code, *not part of the paper*)
+- [x] Training code for a NiNo step in a separate process (with an example for Llama3).
 - [ ] Training dataset and training code for NiNo. 
 
-## Pretrained NiNo models
+# Pretrained NiNo models
 
-We provide the checkpoint for our best performing NiNo model at `checkpoints/nino.pt`.
+We provide the checkpoint for our best performing NiNo model at `checkpoints/nino.pt` as well as other models (see above).
  
-## Usage
+# Usage
 
-### Example
+## Minimal example
 
 Training loop with NiNo for some language model:
 
@@ -81,7 +82,7 @@ opt = NiNo(base_opt=torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=
            message_passing_device=None,  # can use 'cpu' when NiNo is applied to larger models 
            model=model,
            period=1000,
-           max_steps=10000)
+           max_train_steps=10000)
 for step in range(10000):
     if opt.need_grads:  # True/False based on the step number and period
         opt.zero_grad()  # zero out gradients
@@ -94,31 +95,69 @@ for step in range(10000):
     ...
 ```
 
-### Reproducing the results from our paper
+## Reproducing the results from our paper
 
-#### Optimization in vision tasks
+### Vision tasks
 
 Evaluate on all vision tasks:
 ```commandline
-for task in FM-16 C10-16 FM-32 C10-32 C100-32; 
+for task in FM-16 C10-16 FM-32 C10-32 C100-32;
 do for seed in $(seq 1000 1000 10000); 
-do python train_vision.py --task $task --seed $seed | tee -a results.log; done; done
+do python train_vision.py --task $task --seed $seed --nino_ckpt checkpoints/nino.pt | tee -a results.log; done; done
 ```
 
 To evaluate without the NiNo model, run with `--nino_ckpt none`.
 You should get the results similar Table 1 and 2 in the paper.
 
-Use `--verbose 2` for graph visualization and more detailed output.
+Use `--verbose 1` for more detailed output and `--verbose 2` for graph visualizations (saved in `./results/`).
 
-#### Optimization in language tasks
+### Language tasks
 
 Single seed training on the Wiki/3-64 task:
 
 ```commandline
-python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --layers 3 --dim 64 --heads 4
+python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
+--num_train_epochs 4 --layers 3 --dim 64 --heads 4 --nino_ckpt checkpoints/nino.pt
 ```
 
 For LM1B tasks, use `--dataset_name lm1b --dataset_config_name plain_text`.
+
+### NiNo step in a separate process (for larger models)
+
+Training a `LLama3`-based model on `wikitext-103-raw-v1` for 15k steps with NiNo applied every 1k steps:
+
+```commandline
+for s in $(seq 1000 1000 15000); 
+do 
+python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --cache_dir $CACHE \
+ --layers 6 --dim 384 --heads 6 --heads_key_value 2 --tokenizer_name meta-llama/Meta-Llama-3.1-8B --hf_login $HUGGING_FACE_TOKEN \
+ --output_dir $CHECKPOINTS --checkpointing_steps 200 --max_train_steps $s --resume_from_checkpoint $CHECKPOINTS/step_$((s-1000)) \
+ --target 20 --per_device_eval_batch_size 8; 
+ python nino_step.py --ckpt_path $CHECKPOINTS/step_$s --save_path $CHECKPOINTS/step_$s  --verbose 1 --period 1000 \
+ --max_train_steps 15000 --nino_ckpt checkpoints/nino_no_posw.pt --hf_login $HUGGING_FACE_TOKEN --nino_mp_device cpu;
+done
+```
+
+where `$HUGGING_FACE_TOKEN` is your [Hugging Face token](https://huggingface.co/docs/huggingface_hub/en/quick-start#authentication), 
+`$CACHE` is the cache directory for the dataset (optional), 
+and `$CHECKPOINTS` is the directory to save the model checkpoints.
+
+Using `--nino_mp_device cpu` allows to apply NiNo in this configuration on a single GPU with 80GB of memory.
+
+This pipeline can be extended to even larger models, e.g. for a 1B model and using NiNo with MLP (WNN+):
+```commandline
+for s in $(seq 1000 1000 15000); 
+do 
+python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --cache_dir $CACHE \
+ --layers 32 --dim 1280 --heads 32 --heads_key_value 8 --tokenizer_name meta-llama/Meta-Llama-3.1-8B --hf_login $HUGGING_FACE_TOKEN \
+  --output_dir $CHECKPOINTS --checkpointing_steps 200 --max_train_steps $s --resume_from_checkpoint $CHECKPOINTS/step_$((s-1000)) \
+  --target 10 --per_device_train_batch_size 8 --per_device_eval_batch_size 2 --gradient_accumulation_steps 4; 
+  python nino_step.py --ckpt_path $CHECKPOINTS/step_$s --save_path $CHECKPOINTS/step_$s  --verbose 1 --period 1000 \
+ --max_train_steps 15000 --nino_ckpt checkpoints/nino_mlp_h32.pt --hf_login $HUGGING_FACE_TOKEN;
+ done
+```
+
+where `--gradient_accumulation_steps 4` is used to keep the same batch size of 32 on a single GPU with 80GB of memory.
 
 ## Contributing
 

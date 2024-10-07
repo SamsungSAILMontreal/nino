@@ -6,7 +6,7 @@
 
 """
 Example: opt = NiNo(base_opt=torch.optim.AdamW(...), ...)
-See a full example in README, train_vision.py ar train_lm.py.
+See a full example in README.md, train_vision.py ar train_lm.py.
 
 """
 
@@ -15,6 +15,7 @@ import numpy as np
 import transformers
 import torchvision
 import time
+from typing import Optional, Union
 from torch.optim import Optimizer
 from graph import *
 from utils import scale_params, unscale_params, mem
@@ -27,16 +28,29 @@ class NiNo:
     """
 
     def __init__(self,
-                 base_opt: Optimizer,  # e.g. Adam
-                 model,
-                 ckpt='./checkpoints/nino.pt',
-                 period=1000,
-                 verbose=1,
-                 nino_device=None,
-                 message_passing_device=None,
-                 max_steps=10000,
-                 amp=False,
+                 base_opt: Union[Optimizer, None],  # e.g. Adam
+                 model: Union[torch.nn.Module, None],
+                 ckpt: Optional[str] = './checkpoints/nino.pt',
+                 period: Optional[int] = 1000,
+                 verbose: Optional[Union[bool, int]] = 1,
+                 nino_device: Optional[Union[torch.device, int, str]] = None,
+                 message_passing_device: Optional[Union[torch.device, int, str]] = None,
+                 max_train_steps: Optional[int] = 10000,
+                 amp: Optional[bool] = False,
                  **kwargs):
+        """
+
+        :param base_opt: use None if you want to apply NiNo only (see nino_step.py).
+        :param model: PyTorch model. Use None to set the model later (see nino_step.py).
+        :param ckpt: NiNo checkpoint path.
+        :param period: number of steps between NiNo steps.
+        :param verbose:
+        :param nino_device: device for the NiNo model.
+        :param message_passing_device: device for the GNN layer.
+        :param max_train_steps: maximum number of steps (to compute future horizon k).
+        :param amp: Automatic Mixed Precision (AMP) for the NiNo step.
+        :param kwargs: NiNo model arguments.
+        """
         self.base_opt = base_opt
         if verbose:
             print('base optimizer', base_opt)
@@ -44,46 +58,13 @@ class NiNo:
         self.period = period
         self.verbose = verbose
         self.step_idx = 0
-        self.max_steps = max_steps
+        self.max_train_steps = max_train_steps
         self.amp = amp
         self.meta_model = None
 
         # if ckpt is None, use the base optimizer only
         # otherwise, load the NiNo model and initialize the graph
         if ckpt not in [None, 'none', 'None', '']:
-            self.states = []
-            self._model = model
-            self.model_dict = [
-                (name, p.shape if isinstance(p, torch.Tensor) else p)
-                for name, p in model.named_parameters()
-            ]
-
-            # create a neural graph from the model
-            if isinstance(model, transformers.GPT2PreTrainedModel):
-                self.graph = NeuralGraphGPT(self.model_dict, num_heads=model.config.n_head)
-            elif isinstance(model, transformers.BertPreTrainedModel):
-                self.graph = NeuralGraphBERT(self.model_dict, num_heads=model.config.num_attention_heads)
-            elif isinstance(model, transformers.LlamaPreTrainedModel):
-                self.graph = NeuralGraphLlama(self.model_dict,
-                                              num_heads=model.config.num_attention_heads,
-                                              num_key_value_heads=model.config.num_key_value_heads)
-            elif isinstance(model, torchvision.models.VisionTransformer):
-                self.graph = NeuralGraphViT(self.model_dict,
-                                              num_heads=model.encoder.layers.encoder_layer_0.num_heads)
-            else:
-                self.graph = NeuralGraph(self.model_dict)
-
-            if verbose:
-                print('\nNeuralGraph:')
-                print('num_nodes', self.graph.pyg_graph.num_nodes)
-                print('num_edges', self.graph.pyg_graph.num_edges)
-                print('contains_self_loops', self.graph.pyg_graph.contains_self_loops())
-                print('pos', self.graph.pyg_graph.pos.shape)
-                print('edge_index', self.graph.pyg_graph.edge_index.shape)
-
-            if verbose > 1:
-                print('Neural graph visualization is running...')
-                self.graph.visualize()
 
             self.nino_device = next(model.parameters()).device if nino_device is None else nino_device
             state_dict = torch.load(ckpt, map_location=self.nino_device)
@@ -95,28 +76,78 @@ class NiNo:
                 self.nino_device)
             if verbose:
                 print(self.meta_model)
-
-            # use base optimizer to store/load states
-            assert 'states' not in self.base_opt.state, ('base optimizer already has states',
-                                                         list(self.base_opt.state.keys()))
-            self.base_opt.state['states'] = []
-
             self.meta_model.load_state_dict(state_dict)
             self.ctx = self.meta_model.ctx
 
+            self.states = []
             # decay k with steps to predict more in the future at the beginning and less at the end of training
-            # e.g. for default setting with 10k max steps: [40 32 26 20 15 11  7  4  2  1]
+            # e.g. for default setting with 10k max steps: [40 33 26 21 16 11  8  5  3  1]
             p = 2  # power of the decay (the higher, the faster decay)
             self._k_schedule = (np.linspace(self.meta_model.max_seq_len ** (1 / p),
                                             1,
-                                            num=max(1, self.max_steps // self.period)) ** p).round().astype(np.int32)
+                                            num=max(1, self.max_train_steps // self.period)) ** p).round().astype(np.int32)
             if self.verbose:
-                print('k_schedule', self._k_schedule)
+                print(f'\nk_schedule values (direct multi-step forecasting) = {self._k_schedule}')
+            if model is not None:
+                self.set_model(model)
+            else:
+                self._model = None
 
-    def _get_k(self):
-        idx = min(len(self._k_schedule) - 1, self.step_idx // self.period)
+    def set_model(self, model, lpe=None, **kwargs):
+        """
+        Sets the model and creates a neural graph from it.
+        Optionally, visualize the neural graph.
+        :param model: PyTorch model.
+        :param lpe: LPE features if already computed.
+        :param kwargs: NeuralGraph arguments.
+        :return:
+        """
+        self._model = model
+        self._model_dict = [
+            (name, p.shape if isinstance(p, torch.Tensor) else p)
+            for name, p in model.named_parameters()
+        ]
+
+        # create a neural graph from the model
+        kwargs['verbose'] = self.verbose
+        if lpe is not None:
+            kwargs['lpe'] = lpe
+        if self.meta_model.is_mlp:
+            kwargs['lpe'] = False
+        if isinstance(model, transformers.GPT2PreTrainedModel):
+            neural_graph = NeuralGraphGPT
+            kwargs['num_heads'] = model.config.n_head
+        elif isinstance(model, transformers.BertPreTrainedModel):
+            neural_graph = NeuralGraphBERT
+            kwargs['num_heads'] = model.config.num_attention_heads
+        elif isinstance(model, transformers.LlamaPreTrainedModel):
+            neural_graph = NeuralGraphLlama
+            kwargs['num_heads'] = model.config.num_attention_heads
+            kwargs['num_key_value_heads'] = model.config.num_key_value_heads
+        elif isinstance(model, torchvision.models.VisionTransformer):
+            neural_graph = NeuralGraphViT
+            kwargs['num_heads'] = model.encoder.layers.encoder_layer_0.num_heads
+        else:
+            neural_graph = NeuralGraph
+
+        start_time = time.time()
+        self.graph = neural_graph(self._model_dict, **kwargs)
+
         if self.verbose:
-            print('k_schedule idx', idx, 'k', self._k_schedule[idx], flush=True)
+            print('\nNeuralGraph constructed in {:.3f} sec:'.format(time.time() - start_time))
+            print('num_nodes:', self.graph.pyg_graph.num_nodes)
+            print('num_edges:', self.graph.pyg_graph.num_edges)
+            print('contains_self_loops:', self.graph.pyg_graph.contains_self_loops())
+            if self.graph.lpe:
+                print('pos (LPE):', self.graph.pyg_graph.pos.shape)
+            print('edge_index:', self.graph.pyg_graph.edge_index.shape)
+
+        if self.verbose > 1:
+            print('Neural graph visualization is running...')
+            self.graph.visualize()
+
+    def get_k(self, step=None):
+        idx = min(len(self._k_schedule) - 1, (self.step_idx if step is None else step) // self.period)
         return self._k_schedule[idx]
 
     def state_dict(self):
@@ -127,32 +158,33 @@ class NiNo:
 
     @property
     def next_step_nino(self):
-        return self.meta_model and (len(self.base_opt.state['states']) == (self.ctx - 1) and
+        return self.meta_model and (len(self.states) == (self.ctx - 1) and
                                     (self.step_idx + 1) % (self.period // self.ctx) == 0)
 
     @property
     def need_grads(self):
         return not self.next_step_nino
 
-    def step(self, closure=None):
+    def step(self, closure=None, k=None, nino_fw_device=None):
 
-        if self.meta_model and len(self.base_opt.state['states']) == self.ctx:
-            self.base_opt.state['states'] = []
+        if self.meta_model:
+            device = nino_fw_device if nino_fw_device is not None else self.nino_device
 
         if self.meta_model and (self.step_idx + 1) % (self.period // self.ctx) == 0:
-            # get parameters from the optimizer as a concatenated tensor
+            # get parameters from the model as a concatenated tensor
             # add params to the list of states
-            self.base_opt.state['states'].append(torch.cat([p.data.view(-1).to(self.nino_device)
-                                                            for p in self._model.parameters()]))
+            self.states.append(torch.cat([p.data.view(-1).to(self.nino_device)
+                                          for p in self._model.parameters()]))
             # can access params via self.base_opt.param_groups, but not trivial for several groups in param_groups
             if self.verbose:
-                print('step {}, add state #{}, mem on {}={:.3f}G'.format(self.step_idx + 1,
-                                                                         len(self.base_opt.state['states']),
-                                                                         self.nino_device,
-                                                                         mem(self.nino_device)), flush=True)
+                print('step {}, add state #{}, mem on {}={:.3f}G, cpu={:.3f}G'.format(self.step_idx + 1,
+                                                                                      len(self.states),
+                                                                                      device,
+                                                                                      mem(device),
+                                                                                      mem('cpu')), flush=True)
 
-        if self.meta_model and len(self.base_opt.state['states']) == self.ctx:
-            # grads are not need for this step (can omit loss.backward())
+        if self.meta_model and len(self.states) == self.ctx:
+            # gradients are not needed for this step (can omit loss.backward())
 
             if closure is not None:
                 loss = closure()
@@ -161,12 +193,18 @@ class NiNo:
             else:
                 loss = None
 
+            if k is None:
+                k = self.get_k()
             if self.verbose:
-                if torch.cuda.is_available():
+                if torch.cuda.is_available() and self.nino_device != 'cpu':
                     torch.cuda.reset_peak_memory_stats(self.nino_device)
                     torch.cuda.synchronize()
-                print('NiNo step starting: mem on {}={:.3f}G'.format(self.nino_device,
-                                                                     mem(self.nino_device)), flush=True)
+                print('\nNiNo step starting at step {} (k={}): peak mem on {}={:.3f}G, cpu={:.3f}G'.format(
+                    self.step_idx + 1,
+                    k,
+                    device,
+                    mem(device),
+                    mem('cpu')), flush=True)
                 start_time = time.time()
 
             with torch.no_grad():
@@ -175,25 +213,29 @@ class NiNo:
                                     enabled=self.amp,
                                     dtype=torch.bfloat16):
                     # using AMP can save memory but may lead to NaNs in the predicted parameters
-                    states = torch.stack(self.base_opt.state['states'], dim=1)
-                    states, scales = scale_params(states, self.model_dict)
+
+                    states = torch.stack(self.states, dim=1)
+                    states, scales = scale_params(states, self._model_dict)
                     self.graph.set_edge_attr(states)
-                    self.graph.pyg_graph = self.meta_model(self.graph.pyg_graph.to(self.nino_device), k=self._get_k())
+                    if nino_fw_device is not None:
+                        self.meta_model = self.meta_model.to(nino_fw_device)
+                    self.graph.pyg_graph = self.meta_model(self.graph.pyg_graph.to(self.nino_device), k=k)
                     if self.graph.pyg_graph.edge_attr.shape[-1] != 1:
                         print('\nWARNING: edge_attr.shape[-1] != 1', self.graph.pyg_graph.edge_attr.shape)
                     x = self.graph.to_vector()
                     if torch.isnan(x).any():
                         raise ValueError('NaNs in the predicted parameters')
-                    x = unscale_params(x, self.model_dict, scales)
-                    if torch.isnan(x).any():
-                        raise ValueError('NaNs in the predicted parameters after scaling')
-                # move states to cpu to free gpu mem
-                self.base_opt.state['states'] = [s.cpu() for s in self.base_opt.state['states']]
+                    x = unscale_params(x, self._model_dict, scales)
+
+                self.states = []
 
             if self.verbose:
-                print('NiNo step finished: {:.3f} sec, mem on {}={:.3f}G'.format(time.time() - start_time,
-                                                                                 self.nino_device,
-                                                                                 mem(self.nino_device)), flush=True)
+                print('NiNo step finished: {:.3f} sec, peak mem on {}={:.3f}G, cpu={:.3f}G\n'.format(
+                    time.time() - start_time,
+                    device,
+                    mem(device),
+                    mem('cpu')),
+                    flush=True)
 
             # set the predicted values as the new parameters
             i = 0
@@ -211,6 +253,10 @@ class NiNo:
             # make sure to compute grads for this step
             loss = self.base_opt.step(closure)
 
-        self.step_idx += 1
+        if hasattr(self.base_opt, 'sync_gradients'):
+            if self.base_opt.sync_gradients:
+                self.step_idx += 1
+        else:
+            self.step_idx += 1
 
         return loss
