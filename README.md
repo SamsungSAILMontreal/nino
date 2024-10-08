@@ -153,7 +153,7 @@ python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-ra
   --output_dir $CHECKPOINTS --checkpointing_steps 200 --max_train_steps $s --resume_from_checkpoint $CHECKPOINTS/step_$((s-1000)) \
   --target 10 --per_device_train_batch_size 8 --per_device_eval_batch_size 2 --gradient_accumulation_steps 4; 
   python nino_step.py --ckpt_path $CHECKPOINTS/step_$s --save_path $CHECKPOINTS/step_$s  --verbose 1 --period 1000 \
- --max_train_steps 15000 --nino_ckpt checkpoints/nino_mlp_h32.pt --hf_login $HUGGING_FACE_TOKEN;
+ --max_train_steps 15000 --nino_ckpt checkpoints/nino_mlp_h32.pt --hf_login $HUGGING_FACE_TOKEN --nino_device cpu;
  done
 ```
 
