@@ -44,7 +44,7 @@ class NiNo:
         :param model: PyTorch model. Use None to set the model later (see nino_step.py).
         :param ckpt: NiNo checkpoint path.
         :param period: number of steps between NiNo steps.
-        :param verbose:
+        :param verbose: print debug info.
         :param nino_device: device for the NiNo model.
         :param message_passing_device: device for the GNN layer.
         :param max_train_steps: maximum number of steps (to compute future horizon k).
@@ -217,6 +217,8 @@ class NiNo:
                     states = torch.stack(self.states, dim=1)
                     states, scales = scale_params(states, self._model_dict)
                     self.graph.set_edge_attr(states)
+                    if self.verbose:
+                        print('running the meta model', flush=True)
                     if nino_fw_device is not None:
                         self.meta_model = self.meta_model.to(nino_fw_device)
                     self.graph.pyg_graph = self.meta_model(self.graph.pyg_graph.to(self.nino_device), k=k)

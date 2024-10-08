@@ -61,7 +61,7 @@ if __name__ == '__main__':
                ckpt=args.nino_ckpt,
                model=None,
                period=args.period,
-               max_steps=args.max_train_steps,
+               max_train_steps=args.max_train_steps,
                nino_device=nino_device,
                message_passing_device=nino_device if args.nino_mp_device is None else args.nino_mp_device,
                verbose=args.verbose,
@@ -124,7 +124,7 @@ if __name__ == '__main__':
 
         if len(opt.states) == opt.ctx - 1:
             opt.step_idx = step - 1  # -1 to properly compute k
-            opt.step(nino_fw_device=device)
+            opt.step(nino_fw_device=device if opt.meta_model.is_mlp else None)
             print('saving model to', args.save_path)
             if is_accelerate:
                 accelerator.save_state(args.save_path)
