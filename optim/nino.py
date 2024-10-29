@@ -68,6 +68,7 @@ class NiNo:
 
             self.nino_device = next(model.parameters()).device if nino_device is None else nino_device
             state_dict = torch.load(ckpt, map_location=self.nino_device)
+            step = state_dict['step'] if 'step' in state_dict else -1
             if 'model_args' in state_dict:
                 kwargs.update(state_dict['model_args'])
                 print('\n\nkwargs', kwargs)
@@ -76,7 +77,13 @@ class NiNo:
                 self.nino_device)
             if verbose:
                 print(self.meta_model)
-            self.meta_model.load_state_dict(state_dict)
+            result = self.meta_model.load_state_dict(state_dict)
+            if verbose:
+                print('NiNo with {} params loaded from step {}, ckpt file {}: {}'.format(
+                    sum([p.numel() for p in self.meta_model.parameters()]),
+                    step,
+                    ckpt,
+                    result))
             self.ctx = self.meta_model.ctx
 
             self.states = []

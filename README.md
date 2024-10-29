@@ -129,7 +129,7 @@ Training a `LLama3`-based model on `wikitext-103-raw-v1` for 15k steps with NiNo
 ```commandline
 for s in $(seq 1000 1000 15000); 
 do 
-python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --cache_dir $CACHE \
+python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --cache_dir $HF_HOME \
  --layers 6 --dim 384 --heads 6 --heads_key_value 2 --tokenizer_name meta-llama/Meta-Llama-3.1-8B --hf_login $HUGGING_FACE_TOKEN \
  --output_dir $CHECKPOINTS --checkpointing_steps 200 --max_train_steps $s --resume_from_checkpoint $CHECKPOINTS/step_$((s-1000)) \
  --target 20 --per_device_eval_batch_size 8; 
@@ -139,7 +139,7 @@ done
 ```
 
 where `$HUGGING_FACE_TOKEN` is your [Hugging Face token](https://huggingface.co/docs/huggingface_hub/en/quick-start#authentication), 
-`$CACHE` is the cache directory for the dataset (optional), 
+`$HF_HOME` is the cache directory for the dataset (optional),
 and `$CHECKPOINTS` is the directory to save the model checkpoints.
 
 Using `--nino_mp_device cpu` allows to apply NiNo in this configuration on a single GPU with 80GB of memory.
@@ -148,7 +148,7 @@ This pipeline can be extended to even larger models, e.g. for a 1B model and usi
 ```commandline
 for s in $(seq 1000 1000 15000); 
 do 
-python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --cache_dir $CACHE \
+python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --cache_dir $HF_HOME \
  --layers 32 --dim 1280 --heads 32 --heads_key_value 8 --tokenizer_name meta-llama/Meta-Llama-3.1-8B --hf_login $HUGGING_FACE_TOKEN \
   --output_dir $CHECKPOINTS --checkpointing_steps 200 --max_train_steps $s --resume_from_checkpoint $CHECKPOINTS/step_$((s-1000)) \
   --target 10 --per_device_train_batch_size 8 --per_device_eval_batch_size 2 --gradient_accumulation_steps 4; 

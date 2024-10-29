@@ -145,6 +145,7 @@ class SGDDataset(Dataset):
                 config = AutoConfig.from_pretrained(task_args['tokenizer'],
                                                     **task_args['net_args'])
                 model = AutoModelForCausalLM.from_config(config)
+
                 n, p = list(model.named_parameters())[0]
                 assert n.endswith('wte.weight'), (n, p.shape)
                 if wte_size < len(p):
@@ -155,6 +156,9 @@ class SGDDataset(Dataset):
                           f'so wte_size will be ignored')
 
                 kwargs['num_heads'] = model.config.n_head
+
+                # model = model.transformer.h[0]  # just one layer
+
                 neural_graph = NeuralGraphGPT
             else:
                 task_args = VISION_TASKS[task.upper()]
@@ -164,17 +168,26 @@ class SGDDataset(Dataset):
             if verbose:
                 print(f'\n{ng}')  # print graph stats
 
+
+            layer_ind = torch.zeros_like(ng.pyg_graph.pos_w)
+            print('layer_ind', layer_ind.shape, ng.pyg_graph.pos_w.shape)
+            for layer, (name, p) in enumerate(ng._model_dict.items()):
+                # sz = p.shape if isinstance(p, torch.Tensor) else p
+                start, end = ng._edge_dict[name]
+                e_ind = ng.pyg_graph.edge_index[0, start:end]
+                print(name, e_ind.shape, e_ind.min(), e_ind.max())
+                layer_num = name.split('transformer.h.')
+                if len(layer_num) > 1:
+                    layer_num = int(layer_num[1].split('.')[0]) + 1  # 1-based index
+                else:
+                    layer_num = 0
+                layer_ind[e_ind.min():e_ind.max() + 1] = layer_num
+            ng.pyg_graph.layer_ind = layer_ind
+
+
             if wte_sampled_size is not None:
 
                 wte_full_size = list(ng._model_dict.values())[0]  # save the full size for later
-                pos, pos_w = None, None
-                if hasattr(ng.pyg_graph, 'pos') and ng.pyg_graph.pos is not None:
-                    pos = ng.pyg_graph.pos.clone()
-                    # check that LPEs are the same for all the neurons in the wte layer
-                    pos_wtelayer = ng.pyg_graph.pos[:wte_full_size[0]]
-                    assert pos_wtelayer.std(dim=0).sum() < 1e-7, (pos_wtelayer.shape, pos_wtelayer.std(dim=0))
-                if hasattr(ng.pyg_graph, 'pos_w') and ng.pyg_graph.pos_w is not None:
-                    pos_w = ng.pyg_graph.pos_w.clone()
 
                 # get a subgraph
                 config = AutoConfig.from_pretrained(task_args['tokenizer'],
@@ -247,12 +260,7 @@ class SGDDataset(Dataset):
 
         sample_index = np.random.randint(low=0, high=n_traj)  # from 0 to 99 (inclusive)
         ng = self.graphs[task]
-        pyg_graph = ng.pyg_graph.clone()  # pytorch geometric graph object
-
-        if hasattr(pyg_graph, 'pos') and pyg_graph.pos is not None:
-            # LPE's sign is non-deterministic, so when training we randomly flip the sign as a data augmentation way
-            # https://pytorch-geometric.readthedocs.io/en/2.4.0/_modules/torch_geometric/transforms/add_positional_encoding.html
-            pyg_graph.pos *= torch.randint(0, 2, size=(1, pyg_graph.pos.shape[1])) * 2 - 1  # pos is (n, 8)
+        pyg_graph = ng.pyg_graph.clone()
 
         if task.startswith('lm1b') and self.wte_size is not None:
             wte_name, wte_sampled_size = self.model_dicts[task][0]
@@ -310,7 +318,7 @@ def worker_init_fn(worker_id):
 # check the dataset (will also download the dataset if not present locally)
 if __name__ == '__main__':
 
-    train_loader = DataLoader(SGDDataset(tasks=('fm-16', 'c10-16', 'lm1b-3-24', 'lm1b-2-32')),
+    train_loader = DataLoader(SGDDataset(tasks=('lm1b-3-24', )),
                               batch_size=2,
                               shuffle=True,
                               num_workers=0,

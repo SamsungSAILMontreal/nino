@@ -21,7 +21,7 @@ since the tokenizer is different from GPT2 used to train NiNo (checkpoints/nino.
     python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
      --num_train_epochs 4 --layers 3 --dim 64 --heads 4 --heads_key_value 2 \
      --tokenizer_name meta-llama/Meta-Llama-3.1-8B --hf_login $HUGGING_FACE_TOKEN \
-     --nino_ckpt checkpoints/nino_no_posw.pt
+     --nino_ckpt checkpoints/nino_no_posw.pt --target 38 --cache_dir $HF_HOME
 
 where $HUGGING_FACE_TOKEN is your Hugging Face token.
 
@@ -158,7 +158,7 @@ def parse_args():
         default=1000,
         help="number of base opt steps after which to apply NiNo.",
     )
-    parser.add_argument("--verbose", type=int, default=0)
+    parser.add_argument("--verbose", type=int, default=1)
     parser.add_argument(
         "--skip_eval",
         action="store_true",
