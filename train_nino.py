@@ -25,7 +25,8 @@ import time
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch_geometric.data import DataLoader
+from datetime import datetime
+from torch.utils.data import DataLoader
 from dataset import SGDDataset, collate_graphs_fn, worker_init_fn
 from optim import NiNoModel
 from utils import set_seed, mem, get_env_args
@@ -54,7 +55,7 @@ def parse_args():
                         help='number of parameter trajectories sampled in each batch')
     parser.add_argument('--max_train_steps', type=int, default=20000,
                         help='maximum number of iterations to train')
-    parser.add_argument('--grad_clip', type=float, default=5, help='grad clip')
+    parser.add_argument('--grad_clip', type=float, default=1, help='grad clip')
     parser.add_argument('--no_amp', action='store_true', default=False,
                         help='turn off automatic mixed precision, by default it is on')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -120,8 +121,10 @@ def main():
                 completed_steps,
                 args.save_path,
                 result))
+            set_seed(int(datetime.now().timestamp()))  # seed to make batches different and avoid recurring nan loss
         except Exception as e:
             print('error loading checkpoint %s' % args.save_path, e)
+            raise
 
     model.train().to(args.device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
@@ -156,7 +159,7 @@ def main():
                     # e.g. completed_steps=445 and checkpoint['step']=400
                     # rollback to the last checkpoint
                     if os.path.exists(args.save_path) and os.path.exists(args.save_path + '.bak'):
-                        print('restoring the last checkpoint at step {}'.format(checkpoint['step']), flush=True)
+                        print('restoring the checkpoint before step {}'.format(checkpoint['step']), flush=True)
                         shutil.copyfile(args.save_path + '.bak', args.save_path)  # e.g. step 400 to step 200
                 raise ValueError('NaN loss ({}) at step {}'.format(loss, completed_steps + 1))
 
@@ -189,7 +192,7 @@ def main():
                 losses[-1],
                 np.mean(losses[-1000:]),
                 optimizer.param_groups[0]['lr'],
-                (time.time() - start_t) / max(1, completed_steps),
+                (time.time() - start_t) / len(losses),
                 mem(args.device),
                 mem('cpu')),
                 flush=True)
