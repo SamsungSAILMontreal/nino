@@ -30,7 +30,6 @@ class NeuralGraphTransformer(NeuralGraph):
                  num_heads=None,
                  num_key_value_heads=None,
                  pos_w=True,
-                 wte_sampling_size=None,
                  verbose=True,
                  ):
         """
@@ -47,7 +46,6 @@ class NeuralGraphTransformer(NeuralGraph):
         :param num_heads: number of attention heads in the transformer
         :param num_key_value_heads: number of key/value heads in the transformer (for Grouped-Query Attention)
         :param pos_w: whether to include positional embeddings for wte layers of transformers in the neural graph
-        :param wte_sampling_size: used when wte layer params in x are subsampled (for meta-training)
         :param verbose: whether to print the graph statistics
         """
         assert num_heads is not None, 'num_heads must be provided for transformers!'
@@ -55,7 +53,6 @@ class NeuralGraphTransformer(NeuralGraph):
         self.num_key_value_heads = num_key_value_heads if num_key_value_heads is not None else num_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.pos_w = pos_w
-        self.wte_sampling_size = 0 if wte_sampling_size in ['none', 'None', None] else wte_sampling_size
         super().__init__(model_dict,
                          lpe=lpe,
                          max_feat_size=max_feat_size,
@@ -274,8 +271,4 @@ class NeuralGraphTransformer(NeuralGraph):
                                        edge_type=param_types,
                                        pos_w=pos_w  # positional embeddings for wte layers
                                        )
-        print('num_nodes', self.pyg_graph.num_nodes)
-        print('num_edges', self.pyg_graph.num_edges)
-        print('contains_self_loops', self.pyg_graph.contains_self_loops())
-        print('edge_index', self.pyg_graph.edge_index.shape)
         return self.pyg_graph

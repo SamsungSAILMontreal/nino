@@ -83,7 +83,7 @@ class NiNo:
             # decay k with steps to predict more in the future at the beginning and less at the end of training
             # e.g. for default setting with 10k max steps: [40 33 26 21 16 11  8  5  3  1]
             p = 2  # power of the decay (the higher, the faster decay)
-            self._k_schedule = (np.linspace(self.meta_model.max_seq_len ** (1 / p),
+            self._k_schedule = (np.linspace(self.meta_model.seq_len ** (1 / p),
                                             1,
                                             num=max(1, self.max_train_steps // self.period)) ** p).round().astype(np.int32)
             if self.verbose:
@@ -134,13 +134,9 @@ class NiNo:
         self.graph = neural_graph(self._model_dict, **kwargs)
 
         if self.verbose:
-            print('\nNeuralGraph constructed in {:.3f} sec:'.format(time.time() - start_time))
-            print('num_nodes:', self.graph.pyg_graph.num_nodes)
-            print('num_edges:', self.graph.pyg_graph.num_edges)
-            print('contains_self_loops:', self.graph.pyg_graph.contains_self_loops())
-            if self.graph.lpe:
-                print('pos (LPE):', self.graph.pyg_graph.pos.shape)
-            print('edge_index:', self.graph.pyg_graph.edge_index.shape)
+            print('\nNeural graph for "{}" constructed in {:.3f} sec:\n{}'.format(model.__class__.__name__,
+                                                                                  time.time() - start_time,
+                                                                                  self.graph))
 
         if self.verbose > 1:
             print('Neural graph visualization is running...')
@@ -216,6 +212,8 @@ class NiNo:
 
                     states = torch.stack(self.states, dim=1)
                     states, scales = scale_params(states, self._model_dict)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     self.graph.set_edge_attr(states)
                     if self.verbose:
                         print('running the meta model', flush=True)

@@ -42,12 +42,6 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
 # Updates
 
 - [x] Initial code release with a pretrained NiNo model (see the [`checkpoints`](checkpoints) folder).
-  - [x] `nino.pt` - default NiNo model (assume the GPT2 tokenizer)
-  - [x] `nino_no_posw.pt` - NiNo without positional encoding for word embeddings (can be used for arbitrary models and tokenizers including Llama)
-  - [x] `nino_h32.pt` - NiNo with hidden size 32 instead of default 128
-  - [x] `nino_mlp.pt` - WNN+ model (does not use graphs)
-  - [x] `nino_mlp_h32.pt` - WNN+ model (does not use graphs), with hidden size 32 instead of default 128
-  - [x] `nino_towers4.pt` - NiNo with 4 towers in the message passing step for better efficiency (*not part of the paper*)
 - [x] Neural graphs and evaluation script for convnet tasks.
 - [x] Neural graphs and evaluation script for transformer tasks:
   - [x] GPT2
@@ -55,13 +49,19 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
   - [x] Llama (experimental code, see a graph for a smaller variant of `meta-llama/Meta-Llama-3.1-8B` in the [`results`](results) folder)
   - [x] Vision Transformer (experimental code, *not part of the paper*)
 - [x] Training code for a NiNo step in a separate process (with an example for Llama3).
-- [ ] Training dataset and training code for NiNo. 
+- [x] Training dataset and training code for NiNo. 
 
 # Pretrained NiNo models
 
-We provide the checkpoint for our best performing NiNo model at `checkpoints/nino.pt` as well as other models (see above).
+We provide the checkpoint for our best performing NiNo model at `checkpoints/nino.pt` as well as other models:
+- [x] `nino.pt` - default NiNo model (assume the GPT2 tokenizer)
+- [x] `nino_no_posw.pt` - NiNo without positional encoding for word embeddings (can be used for arbitrary models and tokenizers including Llama)
+- [x] `nino_h32.pt` - NiNo with hidden size 32 instead of default 128
+- [x] `nino_mlp.pt` - WNN+ model (does not use graphs)
+- [x] `nino_mlp_h32.pt` - WNN+ model (does not use graphs), with hidden size 32 instead of default 128
+- [x] `nino_towers4.pt` - NiNo with 4 towers in the message passing step for better efficiency (*not part of the paper*)
  
-# Usage
+# Using pretrained NiNo models
 
 ## Minimal example
 
@@ -159,16 +159,32 @@ python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-ra
 
 where `--gradient_accumulation_steps 4` is used to keep the same batch size of 32 on a single GPU with 80GB of memory.
 
-## Contributing
+# Training NiNo
+
+1. Download the training dataset of checkpoints (~200GB of disk space):
+```commandline
+export HF_HOME=/path/to/hf_cache;  # huggingface home directory (where the dataset will be downloaded) 
+./dataset/download.sh $HF_HOME
+```
+2. Train the NiNo model and save it to ./checkpoints/nino_seed0.pt: ```python train_nino.py --wte_pos_enc```
+
+   - Note 1: If you are planning to use the trained NiNo model on LLM architectures with a non-GPT2 vocabulary, train it without `--wte_pos_enc`
+   - Note 2: We use a high learning rate (0.003) by default that shows better performance, 
+      but it leads to a NaN loss sometimes, so as a workaround we train NiNo in a loop 
+      (NiNo checkpoints are automatically saved every 200 steps, so it is resumed from the last checkpoint): 
+      ```for i in $(seq 1 50); do python train_nino.py --wte_pos_enc; done```
+
+
+# Contributing
 
 Pull requests and github issues are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
-## LICENSE
+# LICENSE
 
 MIT, see the [LICENSE](LICENSE) file.
 
 
-## Citation
+# Citation
 
 ```
 @misc{knyazev2024accelerating,

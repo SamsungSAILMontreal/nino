@@ -8,11 +8,10 @@
 Functions to scale and unscale model parameters.
 """
 
-import numpy as np
 import torch
 
-METHODS = ['std', 'std-param', 'min-max', 'min-max-param']
 
+METHODS = ['std', 'std-param', 'min-max', 'min-max-param']
 
 def scale_params(x, model_dict, scales=None, method='std', eps=1e-6):
     # x: psz, seq_len/batch (>=1 for training), state_dim
@@ -30,10 +29,11 @@ def scale_params(x, model_dict, scales=None, method='std', eps=1e-6):
         scales = []
     per_param = method.endswith('-param')
     is_std = method.startswith('std')
-    for layer, (_, p) in enumerate(model_dict):
+    for layer, (name, p) in enumerate(model_dict.items() if isinstance(model_dict, dict) else model_dict):
         shape = p.shape if isinstance(p, torch.Tensor) else p
-        n = len(x) if per_param else np.prod(tuple(shape))
+        n = len(x) if per_param else shape.numel()
         w = x[offset: offset + n]  # (n, seq_len, state_dim)
+        assert len(w) > 0, (name, 'p', shape, 'w', w.shape, 'x', x.shape, 'offset', offset)
         if compute_scales:
             dims = 2 if per_param else (0, 2)
             if is_std:
@@ -58,6 +58,8 @@ def scale_params(x, model_dict, scales=None, method='std', eps=1e-6):
     if len(sz_org) == 2:
         x = x.squeeze(1)
 
+    assert offset == len(x), (offset, len(x))
+
     return x, scales
 
 
@@ -75,14 +77,17 @@ def unscale_params(x, model_dict, scales, method='std'):
     per_param = method.endswith('-param')
 
     offset = 0
-    for layer, (_, p) in enumerate(model_dict):
-        sz = p.shape if isinstance(p, torch.Tensor) else p
-        n = len(x) if per_param else sz.numel()
+    for layer, (name, p) in enumerate(model_dict.items() if isinstance(model_dict, dict) else model_dict):
+        shape = p.shape if isinstance(p, torch.Tensor) else p
+        n = len(x) if per_param else shape.numel()
         w = x[offset: offset + n]  # (n, seq_len, state_dim)
+        assert len(w) > 0, (name, 'p', shape, 'w', w.shape, 'x', x.shape, 'offset', offset)
         mn, sd = scales[layer]
         x[offset: offset + n] = w * sd.to(w) + mn.to(w)
         offset += n
         if per_param:
             break
+
+    assert offset == len(x), (offset, len(x))
 
     return x

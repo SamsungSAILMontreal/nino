@@ -23,7 +23,6 @@ from optim import NiNo
 from utils import Net, get_env_args
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch implementation of a NiNo step given a history of checkpoints')
     parser.add_argument('--nino_ckpt', type=str, default='checkpoints/nino.pt')
@@ -93,6 +92,7 @@ if __name__ == '__main__':
                 model = AutoModelForCausalLM.from_config(
                     AutoConfig.from_pretrained(config_path)).to(nino_device)
                 accelerator = Accelerator()
+                model = accelerator.prepare(model)
             else:
                 state_dict = torch.load(ckpt_path, map_location=nino_device)
                 model_args = state_dict['model_args']
@@ -117,7 +117,6 @@ if __name__ == '__main__':
 
         # load the model state and add it to the list of states
         if is_accelerate:
-            model = accelerator.prepare(model)
             load_checkpoint_in_model(opt._model, ckpt_path)
         else:
             opt._model.load_state_dict(state_dict['model'])

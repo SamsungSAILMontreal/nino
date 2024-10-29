@@ -10,7 +10,10 @@
 Example usage:
 
     python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
-     --num_train_epochs 4 --layers 3 --dim 64 --heads 4 --nino_ckpt checkpoints/nino.pt
+     --num_train_epochs 4 --layers 3 --dim 64 --heads 4 --nino_ckpt checkpoints/nino.pt --cache_dir $HF_HOME
+
+    python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
+     --num_train_epochs 4 --layers 6 --dim 384 --heads 6 --nino_ckpt checkpoints/nino.pt --target 38 --cache_dir $HF_HOME
 
 To train a Llama3-based model with Grouped-Query Attention using checkpoints/nino_no_posw.pt in this case,
 since the tokenizer is different from GPT2 used to train NiNo (checkpoints/nino.pt):
@@ -932,6 +935,10 @@ def main():
                     progress_bar.update(1)
                     completed_steps += 1
 
+                if args.output_dir is not None and accelerator.is_main_process and completed_steps % 100 == 0:
+                    with open(os.path.join(args.output_dir, "losses.json"), "w") as f:
+                        json.dump({"eval_losses": eval_losses, "losses": losses}, f)
+
                 if isinstance(checkpointing_steps, int) and completed_steps % checkpointing_steps == 0:
                     save(completed_steps)
                 if completed_steps >= args.max_train_steps:
@@ -972,8 +979,8 @@ def main():
                     repo_type="model",
                     token=args.hub_token,
                 )
-            with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-                json.dump({"eval_losses": eval_losses}, f)
+            with open(os.path.join(args.output_dir, "losses.json"), "w") as f:
+                json.dump({"eval_losses": eval_losses, "losses": losses}, f)
 
 
 if __name__ == "__main__":

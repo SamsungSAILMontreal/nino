@@ -90,7 +90,7 @@ class Net(nn.Module):
 mnist_norm = ((0.1307,), (0.3081,))
 cifar_norm = ((0.49139968, 0.48215827, 0.44653124), (0.24703233, 0.24348505, 0.26158768))
 
-TASKS = {
+VISION_TASKS = {
 
     'debug': {
         'net_args': {'hid': (4, 6, 6), 'in_channels': 1, 'num_classes': 10},
@@ -146,11 +146,11 @@ TASKS = {
 
 # test the code
 if __name__ == '__main__':
-    for task, args in TASKS.items():
+    for task, args in VISION_TASKS.items():
         net = Net(**args['net_args'])
         print(f'\nTASK={task}, dataset={args["dataset"]}')
         print(net)
-        print('params', sum(p.numel() for p in net.parameters()))
+        print('params', sum({p.data_ptr(): p.numel() for p in model.parameters()}.values()))
         print('output', net(torch.randn(1, net.fc[0].weight.shape[1], 28, 28)).shape)
 
     print('Done!')

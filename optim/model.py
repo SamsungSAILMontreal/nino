@@ -28,7 +28,7 @@ class NiNoModel(nn.Module):
                  input_layer='linear',
                  act_name='silu',
                  residual=True,
-                 max_seq_len=40,
+                 seq_len=40,
                  improved_graph=True,
                  wte_pos_enc=True,  # ignored for mlp
                  vocab_size=50257,  # 50257 for GPT2, ignored for mlp
@@ -43,10 +43,14 @@ class NiNoModel(nn.Module):
         self.hid = hid
         self.max_feat_size = max_feat_size
         self.dms = dms
+        if not self.dms:
+            raise NotImplementedError('Only dms=True is supported in this implementation')
         self.residual = residual
-        self.max_seq_len = max_seq_len
+        self.seq_len = seq_len
         self.max_feat_size = 1 if max_feat_size is None else max_feat_size
         self.improved_graph = improved_graph
+        if not self.improved_graph:
+            raise NotImplementedError('Only improved_graph=True is supported in this implementation')
         self.wte_pos_enc = wte_pos_enc
         self.edge_types = edge_types
         self.lpe = lpe
@@ -57,7 +61,7 @@ class NiNoModel(nn.Module):
         if self.edge_types > 0:
             self.layer_embed = nn.Embedding(self.edge_types, hid)
 
-        out_dim = max_seq_len if self.dms else 1
+        out_dim = seq_len if self.dms else 1
         mlp_kwargs = {'hid_dim': hid, 'n_layers': 2, 'act_name': act_name}
         self.edge_proj = MLP(in_dim=(1 if self.is_mlp else self.max_feat_size) * ctx,
                              **dict(mlp_kwargs, n_layers=1 if input_layer == 'linear' else 2))
@@ -197,8 +201,10 @@ class NiNoModel(nn.Module):
             graphs.edge_attr = graphs.edge_attr.flatten(1, 2)
             assert graphs.x.dim() == graphs.edge_attr.dim() == 2, (graphs.x.shape, graphs.edge_attr.shape)
 
+            dtype = next(self.edge_proj.parameters()).dtype
+
             if self.training:
-                graphs.edge_attr = edge_types + self.edge_proj(graphs.edge_attr)
+                graphs.edge_attr = edge_types + self.edge_proj(graphs.edge_attr.to(dtype))
             else:
 
                 if max_feat_size < self.max_feat_size:

@@ -17,7 +17,6 @@ See more examples in the README.md file.
 
 import argparse
 import os.path
-
 import numpy as np
 import time
 import torch
@@ -25,7 +24,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
 from optim import NiNo
-from utils import set_seed, Net, TASKS, mem, get_env_args
+from utils import set_seed, Net, VISION_TASKS, mem, get_env_args
 
 
 def test(model, data, target, verbose=0):
@@ -72,9 +71,9 @@ def main():
     args = parse_args()
     device = args.device
     try:
-        task = TASKS[args.task]
+        task = VISION_TASKS[args.task]
     except KeyError:
-        raise ValueError(f"Task {args.task} not found in {list(TASKS.keys())}")
+        raise ValueError(f"Task {args.task} not found in {list(VISION_TASKS.keys())}")
     print('task', task)
 
     transform = transforms.Compose([

@@ -19,9 +19,8 @@ In case of import errors, you can run it as a module:
 import os.path
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch_geometric as pyg
-from torch import arange, zeros, ones
+from torch import arange, zeros, ones, zeros_like
 from torch_geometric.utils import to_networkx, add_self_loops
 from torch_geometric.transforms import ToUndirected, Compose, AddSelfLoops, AddLaplacianEigenvectorPE
 
@@ -73,10 +72,10 @@ class NeuralGraph:
             if self.lpe:
                 self._add_lpe()
 
-        if self.pyg_graph.contains_isolated_nodes():
+        if self.pyg_graph.has_isolated_nodes():
             print('\nWARNING: isolated nodes found, which indicates that the neural graph '
                   'is likely constructed incorrectly\n')
-        if self.self_loops != self.pyg_graph.contains_self_loops():
+        if self.self_loops != self.pyg_graph.has_self_loops():
             print('\nWARNING: self-loops check fail indicates that the neural graph '
                   'is likely constructed incorrectly\n')
 
@@ -208,12 +207,12 @@ class NeuralGraph:
         Computes Laplacian eigenvector positional encodings that are used as the neural graph node features.
         :return:
         """
-        transform = [] if self.pyg_graph.contains_self_loops() else [AddSelfLoops()]
+        transform = [] if self.pyg_graph.has_self_loops() else [AddSelfLoops()]
         transform = Compose(transform + [ToUndirected(),
                                          AddLaplacianEigenvectorPE(k=self.lpe, is_undirected=True)])
         device = self.pyg_graph.edge_index.device
         if self.verbose:
-            print('Computing Laplacian positional encoding (LPE)...')
+            print(f'Computing Laplacian positional encoding (LPE) for k={self.lpe}...')
         self.pyg_graph.pos = transform(self.pyg_graph.to('cpu')).laplacian_eigenvector_pe.to(device)
 
     def _get_weight(self, states, offset, name, sz):
@@ -227,11 +226,12 @@ class NeuralGraph:
         offset += n
         return w, offset
 
-    def set_edge_attr(self, states):
+    def to_edges(self, states, return_mask=False):
         """
-        Sets the edge attributes of the neural graph using the states.
+        Converts the model states to edge attributes of the neural graph.
         :param states: list of model states or a tensor of shape (num_params, state_dim)
-        :return:
+        :param return_mask: whether to return a mask for the edge attributes
+        :return: edge attributes of the neural graph
         """
         states = torch.stack(states, dim=1) if isinstance(states, list) else states
         if states.dim() == 3:
@@ -239,15 +239,14 @@ class NeuralGraph:
         elif states.dim() == 1:
             states = states.unsqueeze(1)
         assert states.dim() == 2, states.shape
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        print('creating edge_attr with shape', (self.pyg_graph.edge_index.shape[1],
-                                                self.max_feat_size * states.shape[1]), states.device, flush=True)
-        self.pyg_graph.edge_attr = zeros(self.pyg_graph.edge_index.shape[1],
-                                         self.max_feat_size * states.shape[1]).to(states)
+
+        edge_attr = zeros(self.pyg_graph.edge_index.shape[1],
+                          self.max_feat_size * states.shape[1], dtype=states.dtype, device=states.device)
+        if return_mask:
+            mask = zeros_like(edge_attr, dtype=torch.bool)
         self._n_params = len(states)
         self._param_vector_index = {}  # to keep indices and convert back to_vector easier
-        offset = 0
+        offset, end = 0, 0
         for layer, (name, p) in enumerate(self._model_dict.items()):
             sz = p.shape if isinstance(p, torch.Tensor) else p
             param_type = self._param_type(name, sz)
@@ -266,10 +265,14 @@ class NeuralGraph:
             assert w.dim() == 4, w.shape
 
             w = self._permute(w, name, sz)  # make in_dim before out_dim for neural graphs
-            if w.shape[-2] < self.max_feat_size:
-                w = F.pad(w, pad=(0, 0, 0, self.max_feat_size - w.shape[-2]))  # e.g. torch.Size([1, 4, 3*3, 5])
 
-            self.pyg_graph.edge_attr[start: end, :] = w.flatten(0, 1).flatten(1, 2)
+            # print(layer, name, sz, w.shape, start, end)
+            # torch.Size([3, 16, 9, 5])
+            # torch.Size([1, 16, 1, 5])
+            if return_mask:
+                mask[start: end, :w.shape[2] * w.shape[3]] = 1
+
+            edge_attr[start: end, :w.shape[2] * w.shape[3]] = w.flatten(0, 1).flatten(1, 2)  # e.g. [1, 4, 3*3, 5]
 
         assert end == self.pyg_graph.edge_index.shape[1] - self.pyg_graph.num_nodes, (end,
                                                                                       self.pyg_graph.edge_index.shape,
@@ -277,11 +280,34 @@ class NeuralGraph:
         if self.self_loops:
             # append self-loop features to the edge_attr
             # should correspond to the appended edge_index values in self.pyg_graph.edge_index
-            self_loops = zeros(self.pyg_graph.num_nodes, self.max_feat_size, states.shape[1]).to(
-                self.pyg_graph.edge_attr)
+            self_loops = zeros(self.pyg_graph.num_nodes, self.max_feat_size, states.shape[1],
+                               dtype=edge_attr.dtype, device=edge_attr.device)
             self_loops[:, :1, :] = 2
+            edge_attr[end:] = self_loops.flatten(1, 2)
+            if return_mask:
+                mask[end:, :states.shape[1]] = 1
 
-            self.pyg_graph.edge_attr[end:] =  self_loops.flatten(1, 2)
+        if return_mask:
+            return edge_attr, mask
+        else:
+            return edge_attr
+
+    def set_edge_attr(self, states):
+        """
+        Sets the edge attributes of the neural graph using the states.
+        :param states: list of model states or a tensor of shape (num_params, state_dim)
+        :return:
+        """
+        states = torch.stack(states, dim=1) if isinstance(states, list) else states
+        if states.dim() == 3:
+            states = states.squeeze(1)
+        elif states.dim() == 1:
+            states = states.unsqueeze(1)
+        assert states.dim() == 2, states.shape
+        if self.verbose:
+            print('creating edge_attr with shape', (self.pyg_graph.edge_index.shape[1],
+                                                    self.max_feat_size * states.shape[1]), states.device, flush=True)
+        self.pyg_graph.edge_attr = self.to_edges(states)
 
     def to_vector(self, edge_attr_dim=0, clean_up=True):
         """
@@ -427,18 +453,67 @@ class NeuralGraph:
         except Exception as e:
             print(e)
 
+    def visualize_lpe(self,
+                      fig_size=(5, 3.5),
+                      edge_attr_key='edge_type',
+                      remove_self_loops=True,
+                      path='./results/',
+                      show=False):
+
+        if not hasattr(self.pyg_graph, 'pos') or self.pyg_graph.pos is None:
+            raise ValueError('LPE not computed')
+
+        from sklearn.manifold import TSNE
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        import networkx as nx
+
+        g = to_networkx(self.pyg_graph,
+                        edge_attrs=[edge_attr_key],
+                        remove_self_loops=remove_self_loops)
+        adj = nx.adjacency_matrix(g, weight=edge_attr_key, dtype=np.float32).todense()
+
+        x = self.pyg_graph.pos.cpu().numpy()
+        print(f'running t-SNE for {x.shape} lpe features...', flush=True)
+        x = TSNE(n_components=2,
+                 learning_rate='auto',
+                 init='random',
+                 random_state=0,
+                 perplexity=3).fit_transform(x)
+
+        sns.set_theme(style="whitegrid")
+        plt.figure(figsize=fig_size)
+        plt.scatter(x[:, 0], x[:, 1], c=adj.max(0))
+        plt.colorbar()
+        plt.tight_layout()
+        try:
+            d = os.path.dirname(path)
+            if d and not os.path.exists(d):
+                os.makedirs(d)
+            plt.savefig(path + f'{edge_attr_key}.png', transparent=False)
+            if show:
+                plt.show()
+        except Exception as e:
+            print(e)
+
+
+    # string representation of the neural graph
+    def __repr__(self):
+        lpe_sz = self.pyg_graph.pos.shape if self.lpe else None
+        return (f'NeuralGraph(\n'
+                f'  num_nodes={self.pyg_graph.num_nodes},\n'
+                f'  num_edges={self.pyg_graph.num_edges},\n'
+                f'  edge_index={self.pyg_graph.edge_index.shape},\n'
+                f'  has_self_loops={self.pyg_graph.has_self_loops()},\n'
+                f'  pos (LPE)={lpe_sz}\n'
+                f')')
+
 def run_test(model, graph, name=''):
     print(model)
     print('params:', sum({p.data_ptr(): p.numel() for p in model.parameters()}.values()))
-    print(f'\nNeuralGraph for {name.upper()}:')
-    print('num_nodes:', graph.pyg_graph.num_nodes)
-    print('num_edges:', graph.pyg_graph.num_edges)
-    print('contains_self_loops:', graph.pyg_graph.contains_self_loops())
-    if graph.lpe:
-        print('pos (LPE):', graph.pyg_graph.pos.shape)
-    print('edge_index:', graph.pyg_graph.edge_index.shape)
-
+    print(f'\n{name.upper()} graph:', graph)
     graph.visualize(fig_size=(15, 15), path=f'./results/{name}_')
+    # graph.visualize_lpe(path=f'./results/{name}_lpe_')
     params = torch.cat([p.data.flatten() for n, p in model.named_parameters()])
     graph.set_edge_attr([params, 2 * params])  # add the second state for debugging
     print('edge_attr', graph.pyg_graph.edge_attr.shape)  # only set after calling set_edge_attr
