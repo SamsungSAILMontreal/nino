@@ -58,7 +58,7 @@ def parse_args():
     parser.add_argument('--checkpointing_steps', type=int, default=None)
     parser.add_argument('--resume_from_checkpoint', type=str, default=None)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument('--verbose', type=int, default=0)
+    parser.add_argument('--verbose', type=int, default=1)
     parser.add_argument('--log_interval', type=int, default=100,
                         help='how many batches to wait before logging training status')
     args = parser.parse_args()

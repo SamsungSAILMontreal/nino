@@ -36,6 +36,8 @@ class NiNoModel(nn.Module):
                  lpe=8,  # ignored for mlp
                  chunk_size=10**5,
                  message_passing_device=None,
+                 scale_method='std',
+                 upd_scale=1.0,
                  **kwargs):
         super().__init__()
 
@@ -55,8 +57,10 @@ class NiNoModel(nn.Module):
         self.edge_types = edge_types
         self.lpe = lpe
         self.chunk_size = chunk_size
+        self.scale_method = scale_method
         self.is_mlp = gnn in [False, None, 'None', 'none']
         self.n_msg_layers = None if self.is_mlp else layers
+        self.upd_scale = upd_scale
 
         if self.edge_types > 0:
             self.layer_embed = nn.Embedding(self.edge_types, hid)
@@ -161,7 +165,7 @@ class NiNoModel(nn.Module):
         if self.is_mlp:
 
             # By using chunking in th MLP, we avoid storing the full edge_attr tensor (n_params, feat_dim) in memory
-            chunk_size = len(graphs.edge_attr) if self.chunk_size in [0, -1, None] else self.chunk_size
+            chunk_size = len(graphs.edge_attr) if self.chunk_size in [0, -1, None] or self.training else self.chunk_size
 
             if self.dms and not self.training:
                 assert k is not None and k >= 1, k
@@ -247,7 +251,7 @@ class NiNoModel(nn.Module):
                     1, (self.max_feat_size, -1))
 
         if self.residual:
-            graphs.edge_attr = edge_attr_res.unsqueeze(-1) + graphs.edge_attr
+            graphs.edge_attr = edge_attr_res.unsqueeze(-1) + graphs.edge_attr * self.upd_scale
 
         if self.training:
             graphs.edge_attr = graphs.edge_attr.flatten(1, 2)

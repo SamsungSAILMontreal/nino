@@ -35,6 +35,10 @@ if __name__ == '__main__':
                         help='maximum number of iterations to train (used to compute the prediction future horizon k)')
     parser.add_argument('--period', type=int, default=1000,
                         help='number of base opt steps after which to apply NiNo')
+    parser.add_argument('--k_decay', type=float, default=2.,
+                        help='power of the decay for the future horizon k (the higher, the faster decay).')
+    parser.add_argument('--upd_scale', type=float, default=1.,
+                        help='scale of the predicted delta.')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--nino_device', type=str, default=None,
                         help='NiNo device for parameter update prediction.')
@@ -45,7 +49,7 @@ if __name__ == '__main__':
     parser.add_argument('--hf_login', type=str, default=None,
                         help='Hugging Face token for downloading the model/config.'
     )
-    parser.add_argument('--verbose', type=int, default=0)
+    parser.add_argument('--verbose', type=int, default=1)
     args = get_env_args(parser.parse_args())
     device = args.device
 
@@ -64,6 +68,8 @@ if __name__ == '__main__':
                nino_device=nino_device,
                message_passing_device=nino_device if args.nino_mp_device is None else args.nino_mp_device,
                verbose=args.verbose,
+               p=args.k_decay,
+               upd_scale=args.upd_scale,
                chunk_size=int(args.nino_chunk_size))
     ckpt_freq = opt.period // opt.ctx
     # assume args.ckpt_path is some_path/step_{step}.pt or, for train_lm, some_path/step_{step}

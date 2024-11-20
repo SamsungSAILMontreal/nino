@@ -27,7 +27,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from datetime import datetime
 from torch.utils.data import DataLoader
-from dataset import SGDDataset, collate_graphs_fn, worker_init_fn
+from dataset import SGDDataset, collate_graphs_fn
 from optim import NiNoModel
 from utils import set_seed, mem, get_env_args
 
@@ -45,17 +45,21 @@ def parse_args():
                         help='use positional encoding for the word token embeddings')
     parser.add_argument('--seq_len', type=int, default=40,
                         help='max sequence length for DMS')
+    parser.add_argument('--scale_method', type=str, default='std',
+                        help='parameter scaling method (see utils/scale.py)')
     parser.add_argument('--lr', type=float, default=3e-3,
                         help='learning rate')
     parser.add_argument('--scheduler', type=str, default='cosine',
                         help='lr scheduler')
     parser.add_argument('--wd', type=float, default=1e-2,
                         help='weight decay')
-    parser.add_argument('--batch_size', type=int, default=16,
+    parser.add_argument('--batch_size', type=int, default=4,
                         help='number of parameter trajectories sampled in each batch')
+    parser.add_argument('--samples_per_traj', type=int, default=4,
+                        help='number of parameter trajectories slices sampled from the full trajectory')
     parser.add_argument('--max_train_steps', type=int, default=20000,
                         help='maximum number of iterations to train')
-    parser.add_argument('--grad_clip', type=float, default=1, help='grad clip')
+    parser.add_argument('--grad_clip', type=float, default=5, help='grad clip')
     parser.add_argument('--no_amp', action='store_true', default=False,
                         help='turn off automatic mixed precision, by default it is on')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -85,20 +89,22 @@ def main():
                       step=200,  # can be larger, but for our lm1b checkpoints cannot be smaller
                       lpe=args.lpe,
                       seq_len=args.seq_len,
+                      samples_per_traj=args.samples_per_traj,
+                      scale_method=args.scale_method,
                       verbose=args.verbose)
     train_loader = DataLoader(dset,
                               batch_size=args.batch_size,
                               shuffle=True,
                               num_workers=args.num_workers,
-                              collate_fn=collate_graphs_fn,
-                              worker_init_fn=worker_init_fn)
+                              collate_fn=collate_graphs_fn)
 
     set_seed(args.seed)
     model_args = {'ctx': args.ctx,
                   'lpe': args.lpe,
                   'seq_len': args.seq_len,
                   'max_feat_size': dset.max_feat_size,
-                  'wte_pos_enc': args.wte_pos_enc
+                  'wte_pos_enc': args.wte_pos_enc,
+                  'scale_method': args.scale_method,
                   }
     model = NiNoModel(**model_args)
     if args.verbose:
@@ -121,7 +127,7 @@ def main():
                 completed_steps,
                 args.save_path,
                 result))
-            set_seed(int(datetime.now().timestamp()))  # seed to make batches different and avoid recurring nan loss
+            set_seed(int(datetime.now().timestamp()))  # seed to make batches different (trying to avoid recurring nan loss)
         except Exception as e:
             print('error loading checkpoint %s' % args.save_path, e)
             raise

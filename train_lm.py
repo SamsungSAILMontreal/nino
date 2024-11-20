@@ -158,6 +158,18 @@ def parse_args():
         default=1000,
         help="number of base opt steps after which to apply NiNo.",
     )
+    parser.add_argument(
+        "--k_decay",
+        type=float,
+        default=2.,
+        help="power of the decay for the future horizon k (the higher, the faster decay)."
+    )
+    parser.add_argument(
+        "--upd_scale",
+        type=float,
+        default=1.,
+        help="scale of the predicted delta."
+    )
     parser.add_argument("--verbose", type=int, default=1)
     parser.add_argument(
         "--skip_eval",
@@ -472,11 +484,15 @@ def main():
             raw_datasets["validation"] = load_dataset(
                 args.dataset_name,
                 args.dataset_config_name,
+                data_dir=args.data_dir,
+                cache_dir=args.cache_dir,
                 split=f"train[:{args.validation_split_percentage}%]",
             )
             raw_datasets["train"] = load_dataset(
                 args.dataset_name,
                 args.dataset_config_name,
+                data_dir=args.data_dir,
+                cache_dir=args.cache_dir,
                 split=f"train[:{args.validation_split_percentage}%]" if args.debug else
                 f"train[{args.validation_split_percentage}%:]",
             )
@@ -731,6 +747,8 @@ def main():
                      nino_device=args.nino_device,
                      message_passing_device=args.nino_mp_device,
                      amp=args.mixed_precision != 'no',
+                     p=args.k_decay,
+                     upd_scale=args.upd_scale,
                      verbose=args.verbose)  # haven't tested with distributed training
 
     if args.output_dir is not None:

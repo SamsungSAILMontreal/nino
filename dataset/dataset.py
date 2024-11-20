@@ -25,7 +25,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import torch_geometric as pyg
-from torch import arange, zeros, cat, Size, Tensor, tensor
+from torch import arange, zeros, cat, Size, Tensor, tensor, randint
 from huggingface_hub import hf_hub_download
 from typing import Optional, Union
 from utils import VISION_TASKS, LM_TASKS, Net, scale_params
@@ -43,6 +43,8 @@ class SGDDataset(Dataset):
             seq_len: int = 40,
             wte_size: int = 1000,
             lpe: int = 8,
+            samples_per_traj: Optional[int] = 4,
+            scale_method: str = 'std',
             max_samples: Optional[Union[int, list, tuple]] = None,
             verbose: Optional[Union[bool, int]] = 1,
     ):
@@ -56,6 +58,8 @@ class SGDDataset(Dataset):
         :param seq_len: max sequence length for DMS (direct multistep forecasting) in the target
         :param wte_size: number of word token embeddings to sample during training
         :param lpe: number of laplacian eigenvectors for positional encoding
+        :param samples_per_traj: number of samples to take from each trajectory
+        :param scale_method: method to scale the parameters ('std' or other methods from utils.scale.METHODS)
         :param max_samples: maximum number of models to sample from each task
         :param verbose:
         """
@@ -69,6 +73,8 @@ class SGDDataset(Dataset):
         self.step = step
         self.seq_len = seq_len
         self.wte_size = wte_size
+        self.samples_per_traj = samples_per_traj
+        self.scale_method = scale_method
 
         self.n_trajectories = {}
         self.n_states = {}
@@ -136,23 +142,26 @@ class SGDDataset(Dataset):
 
             # construct the neural graph
             kwargs = {'verbose': verbose, 'lpe': lpe}
-            wte_sampled_size = None
             if task.startswith('lm1b'):
                 if step < 200:
                     print('\nWARNING: lm1b checkpoints were saved every 200 steps, '
                           'so the minimum step of 200 will be used.')
                 task_args = LM_TASKS[task.upper()]
-                config = AutoConfig.from_pretrained(task_args['tokenizer'],
-                                                    **task_args['net_args'])
+                config_full = AutoConfig.from_pretrained(task_args['tokenizer'],
+                                                         **task_args['net_args'])
+                if wte_size >= config_full.vocab_size:
+                    self.wte_size = None
+                    config = config_full
+                    print(f'\nWARNING: wte_size={wte_size} is >= than the full size of the wte={config.vocab_size}, '
+                          f'so wte_size will be ignored')
+                else:
+                    config = AutoConfig.from_pretrained(task_args['tokenizer'],
+                                                        vocab_size=wte_size,
+                                                        **task_args['net_args'])
                 model = AutoModelForCausalLM.from_config(config)
                 n, p = list(model.named_parameters())[0]
                 assert n.endswith('wte.weight'), (n, p.shape)
-                if wte_size < len(p):
-                    wte_sampled_size = Size([wte_size, p.shape[1]])
-                else:
-                    self.wte_size = None
-                    print(f'\nWARNING: wte_size={wte_size} is larger than the full size of the wte={p.shape}, '
-                          f'so wte_size will be ignored')
+                wte_full_size = Size((config_full.vocab_size, p.shape[1]))  # save the full size for later
 
                 kwargs['num_heads'] = model.config.n_head
                 neural_graph = NeuralGraphGPT
@@ -164,38 +173,11 @@ class SGDDataset(Dataset):
             if verbose:
                 print(f'\n{ng}')  # print graph stats
 
-            if wte_sampled_size is not None:
-
-                wte_full_size = list(ng._model_dict.values())[0]  # save the full size for later
-                pos, pos_w = None, None
-                if hasattr(ng.pyg_graph, 'pos') and ng.pyg_graph.pos is not None:
-                    pos = ng.pyg_graph.pos.clone()
-                    # check that LPEs are the same for all the neurons in the wte layer
-                    pos_wtelayer = ng.pyg_graph.pos[:wte_full_size[0]]
-                    assert pos_wtelayer.std(dim=0).sum() < 1e-7, (pos_wtelayer.shape, pos_wtelayer.std(dim=0))
-                if hasattr(ng.pyg_graph, 'pos_w') and ng.pyg_graph.pos_w is not None:
-                    pos_w = ng.pyg_graph.pos_w.clone()
-
-                # get a subgraph
-                config = AutoConfig.from_pretrained(task_args['tokenizer'],
-                                                    vocab_size=wte_size,
-                                                    **task_args['net_args'])
-                model = AutoModelForCausalLM.from_config(config)
-                ng = neural_graph(model.named_parameters(), **kwargs)
+            if task.startswith('lm1b'):
                 ng.wte_full_size = wte_full_size
-
-                neuron_ind = cat((arange(wte_size), arange(wte_full_size[0], len(pos))))
-                # Subsample wte
-                if pos is not None:
-                    # LPE (if used) is computed based on the full (not sampled) model to align with the original model
-                    # LPEs are the same for all neurons in the wte, so can subsample in advance
-                    ng.pyg_graph.pos = pos[neuron_ind]
-                if pos_w is not None:
-                    ng.pyg_graph.pos_w = pos_w[neuron_ind]
 
             self.model_dicts[task] = [(name, p.shape if isinstance(p, Tensor) else p)
                                       for name, p in model.named_parameters()]
-
 
             self.graphs[task] = ng
             self.max_feat_size = max(self.max_feat_size, self.graphs[task].max_feat_size)
@@ -227,8 +209,10 @@ class SGDDataset(Dataset):
 
     def __getitem__(self, index):
 
-        task = np.random.choice(list(self.data.keys()))  # randomly select a task (e.g. lm1b-3-24)
-        sfx = np.random.choice(list(self.data[task].keys()))  # randomly select a part of the task (e.g. p1)
+        # we avoid using numpy random and use torch random instead,
+        # because torch natively supports dataloader workers so random numbers will be different for each worker.
+        task = list(self.data.keys())[torch.randperm(len(self.data.keys()))[0]]  # randomly select a task (e.g. lm1b-3-24)
+        sfx = list(self.data[task].keys())[torch.randperm(len(self.data[task].keys()))[0]]  # randomly select a part of the task (e.g. p1)
 
         if isinstance(self.data[task][sfx], tuple):
             # create a mmap object for each worker
@@ -239,73 +223,81 @@ class SGDDataset(Dataset):
                                              shape=shape)
 
         n_traj, n_states, n_params = self.data[task][sfx].shape  # e.g. (100, 124, 1252464)
+        sample_index = randint(low=0, high=n_traj, size=()).item()  # from 0 to 99 (inclusive)
 
         step = max(1, self.step // (200 if task.startswith('lm1b') else 4))  # e.g. 1
-
-        start = np.random.randint(low=0, high=n_states - self.ctx * step + 1)  # from 0 to 119
-        ind = np.arange(start, n_states, step)[:self.seq_len + self.ctx]  # e.g. 3-47
-
-        sample_index = np.random.randint(low=0, high=n_traj)  # from 0 to 99 (inclusive)
+        start = randint(low=0,
+                        high=n_states - (self.ctx + min(self.seq_len, 2 * self.ctx) + self.samples_per_traj) * step,
+                        size=()).item()  # from 0 to 105
         ng = self.graphs[task]
-        pyg_graph = ng.pyg_graph.clone()  # pytorch geometric graph object
 
-        if hasattr(pyg_graph, 'pos') and pyg_graph.pos is not None:
-            # LPE's sign is non-deterministic, so when training we randomly flip the sign as a data augmentation way
-            # https://pytorch-geometric.readthedocs.io/en/2.4.0/_modules/torch_geometric/transforms/add_positional_encoding.html
-            pyg_graph.pos *= torch.randint(0, 2, size=(1, pyg_graph.pos.shape[1])) * 2 - 1  # pos is (n, 8)
-
-        if task.startswith('lm1b') and self.wte_size is not None:
-            wte_name, wte_sampled_size = self.model_dicts[task][0]
-            wte_full_size = ng.wte_full_size
+        ind = np.arange(start, n_states, step)[:self.seq_len + self.ctx]
+        sample_wte = task.startswith('lm1b') and self.wte_size is not None
+        if sample_wte:
+            _, wte_sampled_size = self.model_dicts[task][0]
+            wte_full_size = self.graphs[task].wte_full_size
             p_ind = np.arange(wte_full_size.numel()).reshape(wte_full_size)  # (50257, D)
             neuron_ind = torch.randperm(wte_full_size[0])[:wte_sampled_size[0]].sort()[0]  # 1000 num from 0 to 50257
-
             p_ind = p_ind[neuron_ind].flatten()  # (1000, D)
-            p_ind = np.concatenate((p_ind, np.arange(wte_full_size.numel(), n_params))).flatten()  # get all indices of sampled params
+            p_ind = np.concatenate(
+                (p_ind, np.arange(wte_full_size.numel(), n_params))).flatten()  # get all indices of sampled params
 
-            if hasattr(pyg_graph, 'pos_w') and pyg_graph.pos_w is not None:
-                pyg_graph.pos_w[:len(neuron_ind)] = neuron_ind + 1  # 1-based index
+            x_all = tensor(self.data[task][sfx][sample_index, ind][:, p_ind]).t()  # (p_ind, seq_len + self.ctx + self.samples_per_traj)
 
-            x = tensor(self.data[task][sfx][sample_index, ind][:, p_ind]).t()  # (p_ind, seq_len + self.ctx)
         else:
-            x = tensor(self.data[task][sfx][sample_index, ind, :]).t()
+            x_all = tensor(self.data[task][sfx][sample_index, ind, :]).t()
 
-        x, y = x[:, :self.ctx], x[:, self.ctx:]  # input of length 5: 3-7, target of length 40: 8-47
+        if hasattr(ng.pyg_graph, 'pos') and ng.pyg_graph.pos is not None:
+            # LPE's sign is non-deterministic, so when training we randomly flip the sign as a data augmentation way
+            # https://pytorch-geometric.readthedocs.io/en/2.4.0/_modules/torch_geometric/transforms/add_positional_encoding.html
+            # Use the same aug for all the samples in the same trajectory
+            aug = randint(0, 2, size=(1, ng.pyg_graph.pos.shape[1])) * 2 - 1  # pos is (n, 8)
 
-        # create a dms mask for the target (1 for valid values, 0 for padding)
-        y_mask = zeros((len(y), self.seq_len), dtype=torch.bool)
-        y_mask[:, :y.shape[1]] = 1
+        graphs = []
+        # sample several sequences from the same trajectory, which performs better than one sequence per trajectory
+        for shift in range(self.samples_per_traj):
+            pyg_graph = ng.pyg_graph.clone()  # pytorch geometric graph object
 
-        # scale the input and target (based on the input)
-        x, scales = scale_params(x, self.model_dicts[task])
-        y, _ = scale_params(y, self.model_dicts[task], scales=scales)
+            if sample_wte and hasattr(pyg_graph, 'pos_w') and pyg_graph.pos_w is not None:
+                pyg_graph.pos_w[:len(neuron_ind)] = neuron_ind + 1  # 1-based index (0 for non-wte neurons)
 
-        # pad target's last dim to seq_len
-        y = F.pad(y, (0, self.seq_len - y.shape[1]))
+            if hasattr(pyg_graph, 'pos') and pyg_graph.pos is not None:
+                pyg_graph.pos *= aug  # augment the laplacian positional encoding (LPE)
 
-        pyg_graph.edge_attr = self.graphs[task].to_edges(x)     # padded edge_attr -> (n, 9*5)
-        pyg_graph.y = self.graphs[task].to_edges(y)             # padded edge_attr -> (n, 9*40)
-        pyg_graph.y_mask = self.graphs[task].to_edges(y_mask)   # padded edge_attr -> (n, 9*40)
+            x, y = x_all[:, shift:shift+self.ctx].clone(), x_all[:, shift+self.ctx:].clone()  # input of length 5: 3-7, target of length 40: 8-47
+            assert y.shape[1] >= 2 * self.ctx, (y.shape, task, sfx, 'sample_index', sample_index,
+                                                'n_states', n_states, 'ind', len(ind), ind)
 
-        return pyg_graph
+            # create a dms mask for the target (1 for valid values, 0 for padding)
+            y_mask = zeros((len(y), self.seq_len), dtype=torch.bool)
+            y_mask[:, :y.shape[1]] = 1
+
+            # scale the input and target (based on the input)
+            x, scales = scale_params(x, self.model_dicts[task], method=self.scale_method, is_train=True)
+            y, _ = scale_params(y, self.model_dicts[task], scales=scales, is_train=True)
+
+            # pad target's last dim to seq_len
+            y = F.pad(y, (0, self.seq_len - y.shape[1]))  # (p_ind, seq_len)
+
+            pyg_graph.edge_attr = self.graphs[task].to_edges(x)     # padded edge_attr -> (n, 9*ctx)
+            pyg_graph.y = self.graphs[task].to_edges(y)             # padded edge_attr -> (n, 9*seq_len)
+            pyg_graph.y_mask = self.graphs[task].to_edges(y_mask)   # padded edge_attr -> (n, 9*seq_len)
+
+            pyg_graph.y_mask[pyg_graph.edge_type >= 10] = 0  # mask out the auxiliary parameters
+            graphs.append(pyg_graph)
+
+        return graphs
 
 
 def collate_graphs_fn(graphs_list):
     """
-    Collate a list of graphs into a batch (a single big graph with disconnected graphs).
-    :param graphs_list:
-    :return:
+    Collate a list of graphs or a list of graph lists into a batch (a single big graph with disconnected graphs).
+    :param graphs_list: list of graphs or a list of graph lists
+    :return: single pyg graph object
     """
+    if isinstance(graphs_list[0], list):
+        return pyg.data.Batch.from_data_list([g for g_lst in graphs_list for g in g_lst])
     return pyg.data.Batch.from_data_list(graphs_list)
-
-def worker_init_fn(worker_id):
-    """
-    Initialize the random seed for the worker.
-    :param worker_id:
-    :return:
-    """
-    np.random.seed(np.random.get_state()[1][0] + worker_id)
-
 
 # check the dataset (will also download the dataset if not present locally)
 if __name__ == '__main__':
@@ -314,8 +306,7 @@ if __name__ == '__main__':
                               batch_size=2,
                               shuffle=True,
                               num_workers=0,
-                              collate_fn=collate_graphs_fn,
-                              worker_init_fn=worker_init_fn)
+                              collate_fn=collate_graphs_fn)
 
     s = time.time()
     for t, graphs in enumerate(train_loader):

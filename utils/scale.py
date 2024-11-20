@@ -13,7 +13,7 @@ import torch
 
 METHODS = ['std', 'std-param', 'min-max', 'min-max-param']
 
-def scale_params(x, model_dict, scales=None, method='std', eps=1e-6):
+def scale_params(x, model_dict, scales=None, method='std', is_train=False, eps=1e-6):
     # x: psz, seq_len/batch (>=1 for training), state_dim
     assert x.dim() in [2, 3], x.shape
     sz_org = x.shape
@@ -31,7 +31,13 @@ def scale_params(x, model_dict, scales=None, method='std', eps=1e-6):
     is_std = method.startswith('std')
     for layer, (name, p) in enumerate(model_dict.items() if isinstance(model_dict, dict) else model_dict):
         shape = p.shape if isinstance(p, torch.Tensor) else p
-        n = len(x) if per_param else shape.numel()
+
+        # In training our NiNo models, for transformers we scale them globally.
+        # However, when using NiNo on new tasks, scaling is always done per layer, including for transformers.
+        # It was a bug, but we found that it actually helps to improve the performance for some reason.
+        is_wte_train = name.endswith('wte.weight') and is_train
+
+        n = len(x) if per_param or is_wte_train else shape.numel()
         w = x[offset: offset + n]  # (n, seq_len, state_dim)
         assert len(w) > 0, (name, 'p', shape, 'w', w.shape, 'x', x.shape, 'offset', offset)
         if compute_scales:
@@ -52,7 +58,7 @@ def scale_params(x, model_dict, scales=None, method='std', eps=1e-6):
         offset += n
         if compute_scales:
             scales.append((mn, sd))
-        if per_param:
+        if per_param or is_wte_train:
             break
 
     if len(sz_org) == 2:

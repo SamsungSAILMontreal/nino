@@ -147,10 +147,10 @@ VISION_TASKS = {
 # test the code
 if __name__ == '__main__':
     for task, args in VISION_TASKS.items():
-        net = Net(**args['net_args'])
+        model = Net(**args['net_args'])
         print(f'\nTASK={task}, dataset={args["dataset"]}')
-        print(net)
+        print(model)
         print('params', sum({p.data_ptr(): p.numel() for p in model.parameters()}.values()))
-        print('output', net(torch.randn(1, net.fc[0].weight.shape[1], 28, 28)).shape)
+        print('output', model(torch.randn(1, model.fc[0].weight.shape[1], 28, 28)).shape)
 
     print('Done!')

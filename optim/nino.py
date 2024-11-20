@@ -37,6 +37,7 @@ class NiNo:
                  message_passing_device: Optional[Union[torch.device, int, str]] = None,
                  max_train_steps: Optional[int] = 10000,
                  amp: Optional[bool] = False,
+                 p: Optional[float] = 2.,
                  **kwargs):
         """
 
@@ -49,6 +50,7 @@ class NiNo:
         :param message_passing_device: device for the GNN layer.
         :param max_train_steps: maximum number of steps (to compute future horizon k).
         :param amp: Automatic Mixed Precision (AMP) for the NiNo step.
+        :param p: power of the decay for the future horizon k (the higher, the faster decay).
         :param kwargs: NiNo model arguments.
         """
         self.base_opt = base_opt
@@ -89,7 +91,6 @@ class NiNo:
             self.states = []
             # decay k with steps to predict more in the future at the beginning and less at the end of training
             # e.g. for default setting with 10k max steps: [40 33 26 21 16 11  8  5  3  1]
-            p = 2  # power of the decay (the higher, the faster decay)
             self._k_schedule = (np.linspace(self.meta_model.seq_len ** (1 / p),
                                             1,
                                             num=max(1, self.max_train_steps // self.period)) ** p).round().astype(np.int32)
@@ -141,9 +142,10 @@ class NiNo:
         self.graph = neural_graph(self._model_dict, **kwargs)
 
         if self.verbose:
-            print('\nNeural graph for "{}" constructed in {:.3f} sec:\n{}'.format(model.__class__.__name__,
-                                                                                  time.time() - start_time,
-                                                                                  self.graph))
+            print('\nNeural graph for "{}" ({}) constructed in {:.3f} sec:\n{}'.format(model.__class__.__name__,
+                                                                                       neural_graph.__name__,
+                                                                                       time.time() - start_time,
+                                                                                       self.graph))
 
         if self.verbose > 1:
             print('Neural graph visualization is running...')
@@ -218,7 +220,7 @@ class NiNo:
                     # using AMP can save memory but may lead to NaNs in the predicted parameters
 
                     states = torch.stack(self.states, dim=1)
-                    states, scales = scale_params(states, self._model_dict)
+                    states, scales = scale_params(states, self._model_dict, method=self.meta_model.scale_method)
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                     self.graph.set_edge_attr(states)
@@ -232,7 +234,7 @@ class NiNo:
                     x = self.graph.to_vector()
                     if torch.isnan(x).any():
                         raise ValueError('NaNs in the predicted parameters')
-                    x = unscale_params(x, self._model_dict, scales)
+                    x = unscale_params(x, self._model_dict, scales, method=self.meta_model.scale_method)
 
                 self.states = []
 

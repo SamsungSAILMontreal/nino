@@ -50,6 +50,7 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
   - [x] Vision Transformer (experimental code, *not part of the paper*)
 - [x] Training code for a NiNo step in a separate process (with an example for Llama3).
 - [x] Training dataset and training code for NiNo. 
+  - Nov 22, 2024: the code update is important to reproduce the training of the NiNo model.
 
 # Pretrained NiNo models
 
@@ -161,7 +162,7 @@ where `--gradient_accumulation_steps 4` is used to keep the same batch size of 3
 
 # Training NiNo
 
-1. Download the training dataset of checkpoints (~200GB of disk space):
+1. Download the training dataset of checkpoints (~200GB of disk space) from https://huggingface.co/datasets/SamsungSAILMontreal/nino_metatrain (`--revision mmap`):
 ```commandline
 export HF_HOME=/path/to/hf_cache;  # huggingface home directory (where the dataset will be downloaded) 
 ./dataset/download.sh $HF_HOME
@@ -170,9 +171,12 @@ export HF_HOME=/path/to/hf_cache;  # huggingface home directory (where the datas
 
    - Note 1: If you are planning to use the trained NiNo model on LLM architectures with a non-GPT2 vocabulary, train it without `--wte_pos_enc`
    - Note 2: We use a high learning rate (0.003) by default that shows better performance, 
-      but it leads to a NaN loss sometimes, so as a workaround we train NiNo in a loop 
+      but it leads to a NaN loss sometimes, especially if amp is used, so as a workaround we train NiNo in a loop 
       (NiNo checkpoints are automatically saved every 200 steps, so it is resumed from the last checkpoint): 
-      ```for i in $(seq 1 50); do python train_nino.py --wte_pos_enc; done```
+      ```for i in $(seq 1 50); do python train_nino.py --wte_pos_enc; done```. 
+      Although training without amp (by using `--no_amp`) also avoids this problem, 
+      we noticed that the training loss overfits in that case, 
+      so some hyperparameter tuning might be needed.
 
 
 # Contributing
