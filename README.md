@@ -45,12 +45,14 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
 - [x] Neural graphs and evaluation script for convnet tasks.
 - [x] Neural graphs and evaluation script for transformer tasks:
   - [x] GPT2
-  - [x] BERT (experimental code, *not part of the paper*)
   - [x] Llama (experimental code, see a graph for a smaller variant of `meta-llama/Meta-Llama-3.1-8B` in the [`results`](results) folder)
+  - [x] BERT (experimental code, *not part of the paper*)
   - [x] Vision Transformer (experimental code, *not part of the paper*)
-- [x] Training code for a NiNo step in a separate process (with an example for Llama3).
+- [x] Code for a NiNo step in a separate process (with an example for Llama3).
+  - &#128293; **Dec 10, 2024**: efficient inference with `--subgraph` and `--edge_sample_ratio 0.05`
+  allowing the NiNo step for **Llama3.2-1B** to be done on a single GPU.
 - [x] Training dataset and training code for NiNo. 
-  - Nov 22, 2024: the code update is important to reproduce the training of the NiNo model.
+  - **Nov 22, 2024**: the code update is important to reproduce training of the NiNo model.
 
 # Pretrained NiNo models
 
@@ -80,7 +82,8 @@ model = AutoModelForCausalLM.from_config(...)  # some model
 # any optimizer other than Adam should also be possible to use with NiNo
 opt = NiNo(base_opt=torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2),
            ckpt='checkpoints/nino.pt',
-           message_passing_device=None,  # can use 'cpu' when NiNo is applied to larger models 
+           subgraph=False, # can be set to True for larger models (see Llama 3.2 example below)
+           edge_sample_ratio=0,  # can be set to a small number for larger models (see Llama 3.2 example below)
            model=model,
            period=1000,
            max_train_steps=10000)
@@ -125,6 +128,8 @@ For LM1B tasks, use `--dataset_name lm1b --dataset_config_name plain_text`.
 
 ### NiNo step in a separate process (for larger models)
 
+#### Llama 3-tiny (111M params)
+
 Training a `LLama3`-based model on `wikitext-103-raw-v1` for 15k steps with NiNo applied every 1k steps:
 
 ```commandline
@@ -135,7 +140,7 @@ python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-ra
  --output_dir $CHECKPOINTS --checkpointing_steps 200 --max_train_steps $s --resume_from_checkpoint $CHECKPOINTS/step_$((s-1000)) \
  --target 20 --per_device_eval_batch_size 8; 
  python nino_step.py --ckpt_path $CHECKPOINTS/step_$s --save_path $CHECKPOINTS/step_$s  --verbose 1 --period 1000 \
- --max_train_steps 15000 --nino_ckpt checkpoints/nino_no_posw.pt --hf_login $HUGGING_FACE_TOKEN --nino_mp_device cpu;
+ --max_train_steps 15000 --nino_ckpt checkpoints/nino_no_posw.pt --hf_login $HUGGING_FACE_TOKEN --edge_sample_ratio 0.05;
 done
 ```
 
@@ -143,22 +148,34 @@ where `$HUGGING_FACE_TOKEN` is your [Hugging Face token](https://huggingface.co/
 `$HF_HOME` is the cache directory for the dataset (optional),
 and `$CHECKPOINTS` is the directory to save the model checkpoints.
 
-Using `--nino_mp_device cpu` allows to apply NiNo in this configuration on a single GPU with 80GB of memory.
 
-This pipeline can be extended to even larger models, e.g. for a 1B model and using NiNo with MLP (WNN+):
+Using `--edge_sample_ratio 0.05` allows to apply NiNo in this configuration on a single GPU with 80GB of memory.
+Even though we sample 5% edges in the message passing step, 
+we were able to achieve the perplexity of `24.17±0.08` after 10k steps and `22.29±0.13` after 14k steps 
+(average and std for 3 seeds), which is very similar to the results in our paper (Table 4).
+
+#### &#128293; Llama 3.2 (1B params)
+
+Same pipeline as above, but in addition we use `--subgraph` that decomposes the Llama model into subgraphs 
+corresponding to transformer blocks and applies NiNo to each subgraph independently. 
+This allows to reduce the memory consumption significantly and apply NiNo to larger models on a single GPU.
+
 ```commandline
 for s in $(seq 1000 1000 15000); 
 do 
 python train_lm.py --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 --num_train_epochs 4 --cache_dir $HF_HOME \
- --layers 32 --dim 1280 --heads 32 --heads_key_value 8 --tokenizer_name meta-llama/Meta-Llama-3.1-8B --hf_login $HUGGING_FACE_TOKEN \
+ --config_name meta-llama/Llama-3.2-1B --tokenizer_name meta-llama/Llama-3.2-1B --hf_login $HUGGING_FACE_TOKEN \
   --output_dir $CHECKPOINTS --checkpointing_steps 200 --max_train_steps $s --resume_from_checkpoint $CHECKPOINTS/step_$((s-1000)) \
   --target 10 --per_device_train_batch_size 8 --per_device_eval_batch_size 2 --gradient_accumulation_steps 4; 
   python nino_step.py --ckpt_path $CHECKPOINTS/step_$s --save_path $CHECKPOINTS/step_$s  --verbose 1 --period 1000 \
- --max_train_steps 15000 --nino_ckpt checkpoints/nino_mlp_h32.pt --hf_login $HUGGING_FACE_TOKEN --nino_device cpu;
- done
+ --max_train_steps 15000 --nino_ckpt checkpoints/nino_no_posw.pt --hf_login $HUGGING_FACE_TOKEN --subgraph --edge_sample_ratio 0.05;
+ done 
 ```
 
 where `--gradient_accumulation_steps 4` is used to keep the same batch size of 32 on a single GPU with 80GB of memory.
+Despite a more efficient implementation, some steps such as projecting the features of the `embed_tokens` layer
+are still expensive and have to be moved to CPU, 
+which requires ~300GB of RAM. We are looking forward to further improvements in the future.
 
 # Training NiNo
 

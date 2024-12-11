@@ -111,7 +111,7 @@ def main():
         print('\nNiNo:', model)
 
     output_dir = os.path.dirname(args.save_path)
-    if not os.path.exists(output_dir):
+    if not os.path.exists(output_dir) and output_dir != '':
         os.makedirs(output_dir, exist_ok=True)
     completed_steps = 0
     if os.path.exists(args.save_path):

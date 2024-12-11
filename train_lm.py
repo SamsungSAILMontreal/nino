@@ -165,16 +165,27 @@ def parse_args():
         help="power of the decay for the future horizon k (the higher, the faster decay)."
     )
     parser.add_argument(
+        "--subgraph",
+        action="store_true",
+        help="split the model into subgraphs (transformer blocks) for the NiNo step to reduce memory usage.",
+    )
+    parser.add_argument(
         "--upd_scale",
         type=float,
         default=1.,
         help="scale of the predicted delta."
     )
+    parser.add_argument(
+        "--edge_sample_ratio",
+        type=float,
+        default=0.,
+        help="proportion of edges to subsample during message passing at test time (0 means no subsample)."
+    )
     parser.add_argument("--verbose", type=int, default=1)
     parser.add_argument(
         "--skip_eval",
         action="store_true",
-        help="skip eval",
+        help="skip eval.",
     )
     parser.add_argument(
         "--eval_freq",
@@ -748,7 +759,9 @@ def main():
                      message_passing_device=args.nino_mp_device,
                      amp=args.mixed_precision != 'no',
                      p=args.k_decay,
+                     subgraph=args.subgraph,
                      upd_scale=args.upd_scale,
+                     edge_sample_ratio=args.edge_sample_ratio,
                      verbose=args.verbose)  # haven't tested with distributed training
 
     if args.output_dir is not None:
@@ -864,9 +877,10 @@ def main():
     progress_bar.update(completed_steps)
 
     print(model,
-          '\nTotal size={:.2f}M params'.format(n_params / 10 ** 6),
-          '\nTotal param norm={:.4f}'.format(
-          torch.norm(torch.stack([torch.norm(p.data, 2) for p in model.parameters()]), 2).item()))
+          '\nTotal size={:.4f}M params\nTotal param norm={:.4f}'.format(
+              n_params / 10 ** 6,
+              torch.norm(torch.stack([torch.norm(p.data, 2) for p in model.parameters()]), 2).item())
+    )
 
     def save(step_idx=None):
         if (accelerator.is_main_process and args.output_dir not in [None, '', 'None', 'none'] and

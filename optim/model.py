@@ -34,10 +34,11 @@ class NiNoModel(nn.Module):
                  vocab_size=50257,  # 50257 for GPT2, ignored for mlp
                  edge_types=15,
                  lpe=8,  # ignored for mlp
-                 chunk_size=10**5,
+                 chunk_size=10**6,
                  message_passing_device=None,
                  scale_method='std',
                  upd_scale=1.0,
+                 edge_sample_ratio=0.0,
                  **kwargs):
         super().__init__()
 
@@ -98,6 +99,7 @@ class NiNoModel(nn.Module):
                            norm=None,
                            chunk_size=chunk_size,
                            message_passing_device=message_passing_device,
+                           edge_sample_ratio=edge_sample_ratio,
                            **kwargs)
 
             self.edge_out = MLP(in_dim=hid,
@@ -162,6 +164,13 @@ class NiNoModel(nn.Module):
         if self.residual:
             edge_attr_res = graphs.edge_attr[:, :, self.ctx - 1]  # last parameter values
 
+        # if the input is on cpu, move it to cuda by chunks to accommodate large models during inference
+        p = next(self.edge_proj.parameters())
+        device = p.device
+        dtype = p.dtype
+        if self.training or p.device == graphs.edge_attr.device:
+            device = None
+
         if self.is_mlp:
 
             # By using chunking in th MLP, we avoid storing the full edge_attr tensor (n_params, feat_dim) in memory
@@ -180,12 +189,11 @@ class NiNoModel(nn.Module):
             else:
                 fc = self.edge_mlp.fc
 
-            device = next(fc[0].parameters()).device
             for i in range(0, len(graphs.edge_attr), chunk_size):
-                graphs.edge_attr[i:i + chunk_size, :, :1] = self.fw_split(fc, self.edge_proj(
-                    graphs.edge_attr[i:i + chunk_size].to(device)) + (
+                graphs.edge_attr[i:i + chunk_size, :, :1] = fc(self.edge_proj(
+                    graphs.edge_attr[i:i + chunk_size].to(device).to(dtype)) + (
                     self.layer_embed(graphs.edge_type[i:i + chunk_size].to(device)).unsqueeze(1)
-                    if self.edge_types else 0)).to(graphs.edge_attr.device)
+                    if self.edge_types else 0))
             graphs.edge_attr = graphs.edge_attr[:, :, :1]
 
             if self.dms and not self.training:
@@ -193,10 +201,10 @@ class NiNoModel(nn.Module):
                 fc[-1].bias.data = b
 
         else:
-            edge_types = self.layer_embed(graphs.edge_type) if self.edge_types else 0
+            edge_types = self.layer_embed(graphs.edge_type.to(device)) if self.edge_types else 0
 
-            x_lpe = self.fw_split(self.node_proj, graphs.pos) if self.lpe else 0
-            wte_pos_emb = self.wte_pos_enc_layer(graphs.pos_w) if self.wte_pos_enc else 0
+            x_lpe = self.fw_split(self.node_proj, graphs.pos.to(device)) if self.lpe else 0
+            wte_pos_emb = self.wte_pos_enc_layer(graphs.pos_w.to(device)) if self.wte_pos_enc else 0
             if self.lpe:
                 assert x_lpe.dim() == 2, x_lpe.shape
             if self.wte_pos_enc:
@@ -205,12 +213,9 @@ class NiNoModel(nn.Module):
             graphs.edge_attr = graphs.edge_attr.flatten(1, 2)
             assert graphs.x.dim() == graphs.edge_attr.dim() == 2, (graphs.x.shape, graphs.edge_attr.shape)
 
-            dtype = next(self.edge_proj.parameters()).dtype
-
             if self.training:
-                graphs.edge_attr = edge_types + self.edge_proj(graphs.edge_attr.to(dtype))
+                graphs.edge_attr = edge_types + self.edge_proj(graphs.edge_attr.to(device).to(dtype))
             else:
-
                 if max_feat_size < self.max_feat_size:
                     fc = self.edge_proj.fc
                     fc[0].weight.data = fc[0].weight.data[:, :max_feat_size * self.ctx]
@@ -220,7 +225,7 @@ class NiNoModel(nn.Module):
                 if self.edge_types:
                     for i in range(0, len(graphs.edge_attr), chunk_size):
                         edge_types[i:i + chunk_size] = self.edge_proj(
-                            graphs.edge_attr[i:i + chunk_size]) + edge_types[i:i + chunk_size]
+                            graphs.edge_attr[i:i + chunk_size].to(device).to(dtype)) + edge_types[i:i + chunk_size]
                 else:
                     edge_types = self.edge_proj(graphs.edge_attr)
 
@@ -228,7 +233,7 @@ class NiNoModel(nn.Module):
                 del edge_types
 
             graphs.x, graphs.edge_attr = self.gnn(
-                x=graphs.x, edge_index=graphs.edge_index, edge_attr=graphs.edge_attr)
+                x=graphs.x, edge_index=graphs.edge_index.to(device), edge_attr=graphs.edge_attr)
 
             if self.dms and not self.training:
                 assert k is not None and k >= 1, k
@@ -251,7 +256,7 @@ class NiNoModel(nn.Module):
                     1, (self.max_feat_size, -1))
 
         if self.residual:
-            graphs.edge_attr = edge_attr_res.unsqueeze(-1) + graphs.edge_attr * self.upd_scale
+            graphs.edge_attr = edge_attr_res.unsqueeze(-1) + graphs.edge_attr.to(edge_attr_res) * self.upd_scale
 
         if self.training:
             graphs.edge_attr = graphs.edge_attr.flatten(1, 2)

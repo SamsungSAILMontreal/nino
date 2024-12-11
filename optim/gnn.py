@@ -85,6 +85,7 @@ class PNA(torch.nn.Module):
         final_edge_update: bool = True,
         chunk_size: int = 0,
         message_passing_device: Optional[torch.device] = None,
+        edge_sample_ratio: float = 0.0,
         **kwargs,
     ):
         super().__init__()
@@ -109,7 +110,9 @@ class PNA(torch.nn.Module):
         self.convs = ModuleList()
         for _ in range(num_layers - 1):
             self.convs.append(self.init_conv(in_channels, hidden_channels,
-                                             chunk_size=chunk_size, message_passing_device=message_passing_device,
+                                             chunk_size=chunk_size,
+                                             message_passing_device=message_passing_device,
+                                             edge_sample_ratio=edge_sample_ratio,
                                              **kwargs))
             if isinstance(in_channels, (tuple, list)):
                 in_channels = (hidden_channels, hidden_channels)
@@ -119,11 +122,15 @@ class PNA(torch.nn.Module):
         if out_channels is not None and jk is None:
             self._is_conv_to_out = True
             self.convs.append(self.init_conv(in_channels, out_channels,
-                                             chunk_size=chunk_size, message_passing_device=message_passing_device,
+                                             chunk_size=chunk_size,
+                                             message_passing_device=message_passing_device,
+                                             edge_sample_ratio=edge_sample_ratio,
                                              **kwargs))
         else:
             self.convs.append(self.init_conv(in_channels, hidden_channels,
-                                             chunk_size=chunk_size, message_passing_device=message_passing_device,
+                                             chunk_size=chunk_size,
+                                             message_passing_device=message_passing_device,
+                                             edge_sample_ratio=edge_sample_ratio,
                                              **kwargs))
 
         self.norms = None
@@ -350,6 +357,7 @@ class PNAConv(MessagePassing):
         gating_edges: bool = False,
         chunk_size=0,
         message_passing_device: Optional[torch.device] = None,
+        edge_sample_ratio: float = 0.0,
         **kwargs,
     ):
         if len(aggregators) == len(scalers) == 1 and scalers[0] == "identity":
@@ -372,6 +380,7 @@ class PNAConv(MessagePassing):
         self.gating_edges = gating_edges
         self.chunk_size = chunk_size
         self.message_passing_device = message_passing_device
+        self.edge_sample_ratio = edge_sample_ratio
 
         self.F_in = in_channels // towers if divide_input else in_channels
         self.F_out = self.out_channels // towers
@@ -423,25 +432,44 @@ class PNAConv(MessagePassing):
         else:
             x = x.view(-1, 1, self.F_in).repeat(1, self.towers, 1)
 
-        if self.message_passing_device is not None:
-            device = x.device
-            # perform the propagation on a separate device
-            x = x.to(self.message_passing_device)
-            edge_index = edge_index.to(self.message_passing_device)
-            # if edge_attr is not None:
-            #     edge_attr = edge_attr.to(self.message_passing_device)
+        # message passing and aggregation
+        if self.training:
+            # generic implementation, not optimized for memory efficiency for specific cases
             out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=None)
-            out = out.to(device)
-            x = x.to(device)
         else:
-            out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=None)  # message passing and aggregation
+            device = x.device  # original device
+            if (self.message_passing_device not in [None, 'None', 'none', 'auto']
+                    and device != self.message_passing_device):
+                edge_attr = edge_attr.to(self.message_passing_device)
+
+            if 1.0 > self.edge_sample_ratio > 0.0:
+                ind = torch.randperm(len(edge_attr))[:int(len(edge_attr) * self.edge_sample_ratio)]
+                edge_attr = edge_attr[ind].clone()
+                edge_index = edge_index[:, ind]
+            else:
+                edge_attr = edge_attr.clone()  # need to clone because it's updated in the message function below
+
+            if (self.message_passing_device not in [None, 'None', 'none', 'auto']
+                    and device != self.message_passing_device):
+                # perform the propagation on a separate device
+                out = self.message(x_i=x.to(self.message_passing_device),
+                                   x_j=None,
+                                   edge_attr=edge_attr,
+                                   edge_index=edge_index.to(self.message_passing_device),
+                                   aggregate=True).to(device)
+            else:
+                out = self.message(x_i=x,
+                                   x_j=None,
+                                   edge_attr=edge_attr,
+                                   edge_index=edge_index,
+                                   aggregate=True)
 
         # node update (relatively cheap)
         out = torch.cat([x, out], dim=-1)
         out = torch.cat([nn(out[:, i]) for i, nn in enumerate(self.post_nns)], dim=1)
         return self.lin(out)
 
-    def message(self, x_i: Tensor, x_j: Tensor, edge_attr: OptTensor) -> Tensor:
+    def message(self, x_i: Tensor, x_j: Tensor, edge_attr: OptTensor, edge_index: OptTensor = None, aggregate=False) -> Tensor:
         """
         This function is called in the self.propagate function of the forward pass above.
         """
@@ -463,27 +491,44 @@ class PNAConv(MessagePassing):
             if self.training:
                 y = [scale * nn_(h[:, i]) + shift for i, nn_ in enumerate(self.pre_nns)]
             else:
-                chunk_size = len(x_i) if self.chunk_size in [0, -1, None] else self.chunk_size
-                assert len(self.pre_nns) == x_i.shape[1] == x_j.shape[1], (len(self.pre_nns),
-                                                                           x_i.shape,
-                                                                           x_j.shape)
+                chunk_size = len(edge_attr) if self.chunk_size in [0, -1, None] else self.chunk_size
+                assert len(self.pre_nns) == x_i.shape[1] == 1, (len(self.pre_nns), x_i.shape,
+                                                                'support only 1 pre_nns layer in the current '
+                                                                'efficient inference implementation')
                 assert not torch.is_grad_enabled(), 'this must be run with torch.no_grad() to avoid memory leaks'
 
                 for i, nn_ in enumerate(self.pre_nns):  # for each tower (by default 1)
                     device = nn_[0].weight.device if self.message_passing_device is not None else x_i.device
-                    for j in range(0, len(x_i), chunk_size):  # chunking for memory efficiency
-                        x_i[j:j + chunk_size, i] = nn_(torch.cat(
-                            [x_i[j:j + chunk_size, i], x_j[j:j + chunk_size, i]],
-                            dim=-1).to(device)).to(x_i)
+                    for j in range(0, len(edge_attr), chunk_size):  # chunking for memory efficiency
+                        if x_j is None:
+                            e = nn_(torch.cat(
+                                [x_i[edge_index[1, j:j + chunk_size], i],
+                                 x_i[edge_index[0, j:j + chunk_size], i]],
+                                dim=-1).to(device)).to(x_i)
+                        else:
+                            assert len(x_i) == len(x_j) == len(edge_attr), (len(x_i), len(x_j), len(edge_attr))
+                            e = nn_(torch.cat(
+                                [x_i[j:j + chunk_size, i], x_j[j:j + chunk_size, i]],
+                                dim=-1).to(device)).to(x_i)
 
-                        scale, shift = self.edge_encoder(edge_attr[j:j + chunk_size]).chunk(2, dim=-1)
+                        scale, shift = self.edge_encoder(edge_attr[j:j + chunk_size].to(device)).chunk(2, dim=-1)
 
                         with torch.amp.autocast(enabled=False,
                                                 device_type='cpu' if device == 'cpu' else 'cuda'):
                             # this operation is sensitive to precision, so we do it in float
-                            x_i[j:j + chunk_size, i] = (scale.to(x_i).float() * x_i[j:j + chunk_size, i] +
-                                                        shift.to(x_i).float()).to(x_i)
-                y = x_i
+                            if x_j is None:
+                                # perform in-place to save memory
+                                edge_attr[j:j + chunk_size] = (scale.to(e).float() * e + shift.to(e).float()).to(e)
+                            else:
+                                x_i[j:j + chunk_size, i] = (scale.to(e).float() * e + shift.to(e).float()).to(e)
+
+                if aggregate:
+                    assert x_j is None, 'x_j must be None for aggregation'
+                    y = self.aggregate(edge_attr.unsqueeze(1).to(edge_index.device),
+                                       index=edge_index[1],
+                                       dim_size=edge_index.max().item() + 1)
+                else:
+                    y = x_i
         else:
             y = [nn_(h[:, i]) for i, nn_ in enumerate(self.pre_nns)]
 

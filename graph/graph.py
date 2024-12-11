@@ -20,6 +20,7 @@ import os.path
 import numpy as np
 import torch
 import torch_geometric as pyg
+from utils import mem
 from torch import arange, zeros, ones, zeros_like
 from torch_geometric.utils import to_networkx, add_self_loops
 from torch_geometric.transforms import ToUndirected, Compose, AddSelfLoops, AddLaplacianEigenvectorPE
@@ -59,6 +60,7 @@ class NeuralGraph:
         self.model_first_dim_out = model_first_dim_out
         self.verbose = verbose
 
+        self._n_params = sum([sz.numel() for sz in self._model_dict.values()])
         self._model_dict = self._update_model_dict()
         self._construct()
 
@@ -212,7 +214,10 @@ class NeuralGraph:
                                          AddLaplacianEigenvectorPE(k=self.lpe, is_undirected=True)])
         device = self.pyg_graph.edge_index.device
         if self.verbose:
-            print(f'Computing Laplacian positional encoding (LPE) for k={self.lpe}...')
+            print('Computing Laplacian positional encoding (LPE) for k={}, '
+                  'graph with {} nodes, mem on cpu={:.3f}G...'.format(self.lpe,
+                                                                      self.pyg_graph.num_nodes,
+                                                                      mem('cpu')))
         self.pyg_graph.pos = transform(self.pyg_graph.to('cpu')).laplacian_eigenvector_pe.to(device)
 
     def _get_weight(self, states, offset, name, sz):
@@ -226,11 +231,11 @@ class NeuralGraph:
         offset += n
         return w, offset
 
-    def to_edges(self, states, return_mask=False):
+    def to_edges(self, states, return_offset=False):
         """
         Converts the model states to edge attributes of the neural graph.
         :param states: list of model states or a tensor of shape (num_params, state_dim)
-        :param return_mask: whether to return a mask for the edge attributes
+        :param return_offset: whether to return the last offset for states
         :return: edge attributes of the neural graph
         """
         states = torch.stack(states, dim=1) if isinstance(states, list) else states
@@ -242,9 +247,7 @@ class NeuralGraph:
 
         edge_attr = zeros(self.pyg_graph.edge_index.shape[1],
                           self.max_feat_size * states.shape[1], dtype=states.dtype, device=states.device)
-        if return_mask:
-            mask = zeros_like(edge_attr, dtype=torch.bool)
-        self._n_params = len(states)
+        assert self._n_params == len(states), (self._n_params, len(states))
         self._param_vector_index = {}  # to keep indices and convert back to_vector easier
         offset, end = 0, 0
         for layer, (name, p) in enumerate(self._model_dict.items()):
@@ -269,8 +272,6 @@ class NeuralGraph:
             # print(layer, name, sz, w.shape, start, end)
             # torch.Size([3, 16, 9, 5])
             # torch.Size([1, 16, 1, 5])
-            if return_mask:
-                mask[start: end, :w.shape[2] * w.shape[3]] = 1
 
             edge_attr[start: end, :w.shape[2] * w.shape[3]] = w.flatten(0, 1).flatten(1, 2)  # e.g. [1, 4, 3*3, 5]
 
@@ -284,18 +285,17 @@ class NeuralGraph:
                                dtype=edge_attr.dtype, device=edge_attr.device)
             self_loops[:, :1, :] = 2
             edge_attr[end:] = self_loops.flatten(1, 2)
-            if return_mask:
-                mask[end:, :states.shape[1]] = 1
 
-        if return_mask:
-            return edge_attr, mask
+        if return_offset:
+            return edge_attr, offset
         else:
             return edge_attr
 
-    def set_edge_attr(self, states):
+    def set_edge_attr(self, states, return_offset=False):
         """
         Sets the edge attributes of the neural graph using the states.
         :param states: list of model states or a tensor of shape (num_params, state_dim)
+        :param return_offset: whether to return the last offset for states
         :return:
         """
         states = torch.stack(states, dim=1) if isinstance(states, list) else states
@@ -304,10 +304,14 @@ class NeuralGraph:
         elif states.dim() == 1:
             states = states.unsqueeze(1)
         assert states.dim() == 2, states.shape
-        if self.verbose:
+        if self.verbose > 1:
             print('creating edge_attr with shape', (self.pyg_graph.edge_index.shape[1],
                                                     self.max_feat_size * states.shape[1]), states.device, flush=True)
-        self.pyg_graph.edge_attr = self.to_edges(states)
+        if return_offset:
+            self.pyg_graph.edge_attr, offset = self.to_edges(states, True)
+            return offset
+        else:
+            self.pyg_graph.edge_attr = self.to_edges(states, False)
 
     def to_vector(self, edge_attr_dim=0, clean_up=True):
         """
@@ -506,7 +510,7 @@ class NeuralGraph:
                 f'  edge_index={self.pyg_graph.edge_index.shape},\n'
                 f'  has_self_loops={self.pyg_graph.has_self_loops()},\n'
                 f'  pos (LPE)={lpe_sz}\n'
-                f')')
+                f'  num model params={self._n_params})\n')
 
 def run_test(model, graph, name=''):
     print(model)
