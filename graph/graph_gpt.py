@@ -29,7 +29,6 @@ class NeuralGraphGPT(NeuralGraphTransformer):
     _names = {
         'cls': 'wte.weight',
         'pos': 'wpe.weight',
-        'type': ' ',
         'attn': 'attn.c_attn.weight',
         'attn_q': 'attn.c_attn.q.weight',
         'attn_k': 'attn.c_attn.k.weight',

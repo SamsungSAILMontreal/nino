@@ -27,8 +27,6 @@ class NeuralGraphLlama(NeuralGraphTransformer):
 
     _names = {
         'cls': 'embed_tokens.weight',
-        'pos': ' ',
-        'type': ' ',
         'attn_q': 'self_attn.q_proj.weight',
         'attn_k': 'self_attn.k_proj.weight',
         'attn_v': 'self_attn.v_proj.weight',

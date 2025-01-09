@@ -8,7 +8,6 @@
 Abstract class for neural graph of transformers.
 Used as a base class for NeuralGraphGPT and other transformer models.
 """
-
 import torch
 import torch_geometric as pyg
 from torch import arange, zeros
@@ -18,7 +17,7 @@ from graph import NeuralGraph, run_test
 
 class NeuralGraphTransformer(NeuralGraph):
 
-    _names = {n: ' ' for n in ['cls', 'pos', 'type', 'attn_q', 'attn_k', 'attn_v', 'mlp_res']}
+    _names = {}
 
     def __init__(self,
                  model_dict,
@@ -87,15 +86,15 @@ class NeuralGraphTransformer(NeuralGraph):
         is_b = name.endswith('.bias')
         if len(sz) == 1 and is_w:
             t = 4  # bn/ln
-        elif len(sz) in [2, 3] and 'cls' in self._names and name.endswith(self._names['cls']):
+        elif len(sz) in [2, 3] and name.endswith((self._names.get('cls', ' '), self._names.get('cls_w', ' '))):
             t = 5  # word embeddings, class_token
-        elif len(sz) in [2, 3] and 'pos' in self._names and name.endswith(self._names['pos']):
+        elif len(sz) in [2, 3] and name.endswith((self._names.get('pos', ' '), self._names.get('pos_w', ' '))):
             t = 6  # pos enc
-        elif len(sz) == 2 and 'attn_q' in self._names and name.endswith(self._names['attn_q']):
+        elif len(sz) == 2 and name.endswith(self._names.get('attn_q', ' ')):
             t = 7  # attn/query weights
-        elif len(sz) == 2 and 'attn_k' in self._names and name.endswith(self._names['attn_k']):
+        elif len(sz) == 2 and name.endswith(self._names.get('attn_k', ' ')):
             t = 8  # attn key weights
-        elif len(sz) == 2 and 'attn_v' in self._names and name.endswith(self._names['attn_v']):
+        elif len(sz) == 2 and name.endswith(self._names.get('attn_v', ' ')):
             t = 9  # attn value weights
         elif len(sz) == 4:
             t = 3  # conv
@@ -130,6 +129,8 @@ class NeuralGraphTransformer(NeuralGraph):
         c_q, r_qv, c_v, c_v_end = 0, 0, 0, 0  # query and value col and row offsets to use as reference points
         is_q_bias, is_k_bias, is_v_bias = False, False, False
         for layer, (name, sz) in enumerate(self._model_dict.items()):
+            if len(sz) == 0:
+                continue
             param_type = self._param_type(name, sz)
             layer_name, key = name[:name.rfind('.')], name[name.rfind('.') + 1:]
             if layer_name not in edge_index:
@@ -138,7 +139,8 @@ class NeuralGraphTransformer(NeuralGraph):
             # assume the weights are in the form (out, in, ...)
             n_out, n_in = sz[0], sz[1] if len(sz) > 1 else 1
             if ((not self.model_first_dim_out and len(sz) >= 2) or
-                    name.endswith((self._names['cls'], self._names['pos'], self._names['type']))):
+                    name.endswith(tuple([self._names.get(key, ' ') for key in
+                                         ['cls', 'cls_w', 'pos', 'pos_w', 'type']]))):
                 # in the GPT2 layers it's (in, out, ...), assuming no nn.linear layers in GPT2
                 n_out, n_in = n_in, n_out
 
@@ -147,7 +149,7 @@ class NeuralGraphTransformer(NeuralGraph):
             elif layer == 0:
                 c_off = n_in
 
-            is_embed = param_type == 6 or name.endswith(self._names['type'])  # positional/type embeddings
+            is_embed = param_type == 6 or name.endswith(self._names.get('type', ' '))  # positional/type embeddings
 
             if is_embed:
                 c_off -= n_out  # to make it connect to the same neurons as the previous layer
@@ -176,12 +178,12 @@ class NeuralGraphTransformer(NeuralGraph):
                                  self._names['attn_q_bias']) in self._model_dict)
             elif param_type == 11:  # auxiliary head connection
                 # to put the heads on the c_q or c_v columns
-                c_off = c_q if layer_name.endswith(self._names['layer_q']) else c_v
+                c_off = c_q if layer_name.endswith(self._names.get('layer_q', ' ')) else c_v
             else:
                 c_off, r_off = self._move_offset(name, c_off, r_off, n_out, n_in)
 
             if key == 'res':
-                if name.endswith(self._names['value_res']):
+                if name.endswith(self._names.get('value_res', ' ')):
                     r_off = r_qv
                     c_off = c_v_end
                 else:
@@ -209,7 +211,7 @@ class NeuralGraphTransformer(NeuralGraph):
 
             if key == 'res':
                 c_off -= n_out  # so that the next layer has the same col offset and appropriate row offset
-                if name.endswith(self._names['value_res']):
+                if name.endswith(self._names.get('value_res', ' ')):
                     r_off += n_out + self.num_heads + c_v_end - c_v + int(is_k_bias) + int(is_v_bias) - 1
                 else:
                     r_off += n_out - int(not is_v_bias)
@@ -227,15 +229,14 @@ class NeuralGraphTransformer(NeuralGraph):
             for (_, layer_name, key) in offset_same_neurons[c_off]:
                 is_w = key.endswith('weight')
                 is_b = key.endswith('bias')
-                if layer_name.endswith(self._names['layer_v']) and is_w:
+                if layer_name.endswith(self._names.get('layer_v', ' ')) and is_w:
                     col_offset -= self.num_key_value_heads + is_v_bias
                 edge_index[layer_name][key][1] += col_offset
                 if key.find('head') >= 0 and not is_w and not is_b:
                     head_ind = int(key[key.find('head') + 4:])
                     edge_index[layer_name][key][1] += head_ind * edge_index[layer_name][key].shape[1]
-                elif layer_name.endswith(self._names['layer_k']) and is_w:
+                elif layer_name.endswith(self._names.get('layer_k', ' ')) and is_w:
                     edge_index[layer_name][key] = edge_index[layer_name][key][[1, 0], :]  # transpose
-
 
         self._edge_dict = {}  # map names to edge indices to use set_edge_attr easier
         edge_idx = 0
@@ -260,7 +261,7 @@ class NeuralGraphTransformer(NeuralGraph):
         pos_w = zeros(n_nodes, dtype=torch.long)
         if self.pos_w:
             for layer, (name, sz) in enumerate(self._model_dict.items()):
-                if name.endswith(self._names['cls']):
+                if name.endswith((self._names.get('cls', ' '), self._names.get('cls_w', ' '))):
                     n_out, n_in = sz[0], sz[1] if len(sz) > 1 else 1
                     if n_out <= n_in:
                         print(f'\nWARNING: n_out ({n_out}) <= n_in ({n_in}) for', name, sz)
@@ -269,6 +270,7 @@ class NeuralGraphTransformer(NeuralGraph):
 
         self.pyg_graph = pyg.data.Data(edge_index=edge_index,
                                        edge_type=param_types,
-                                       pos_w=pos_w  # positional embeddings for wte layers
+                                       pos_w=pos_w,  # positional embeddings for wte layers
+                                       num_nodes=n_nodes
                                        )
         return self.pyg_graph

@@ -28,9 +28,11 @@ class NeuralGraphViT(NeuralGraphTransformer):
     """
 
     _names = {
+        'conv1': 'conv_proj',
         'cls': 'class_token',
+        'cls_w': 'class_token.weight',
         'pos': 'pos_embedding',
-        'type': ' ',
+        'pos_w': 'pos_embedding.weight',
         'attn': 'in_proj_weight',
         'attn_q': 'in_proj_q.weight',
         'attn_k': 'in_proj_k.weight',
@@ -70,12 +72,10 @@ class NeuralGraphViT(NeuralGraphTransformer):
                             (sz_[1] if self.model_first_dim_out else sz_[0],))  # in_dim
 
             elif not name.endswith(self._names['attn_bias']):
-                if name.endswith((self._names['cls'], self._names['pos'])):
-                    model_dict[name + '.weight'] = sz[1:]
-                    if name.endswith(self._names['cls']):
-                        self._names['cls'] += '.weight'
-                    elif name.endswith(self._names['pos']):
-                        self._names['pos'] += '.weight'
+                if name.endswith(tuple([self._names.get(key, ' ') for key in
+                                        ['cls', 'cls_w', 'pos', 'pos_w']] + ['proj'])):
+                    model_dict[name + '.weight'] = sz[1:] if len(sz) > 2 else (torch.Size((1, sz[0]))
+                                                                               if len(sz) == 1 else sz)
                 else:
                     model_dict[name] = sz
                 if name.endswith(self._names['mlp_res']):
@@ -86,7 +86,7 @@ class NeuralGraphViT(NeuralGraphTransformer):
         return model_dict
 
     def _move_offset(self, name, c_off, r_off, n_out, n_in):
-        if name.endswith('conv_proj.weight'):
+        if name.endswith(self._names['conv1'] + '.weight'):
             c_off -= n_out
         return c_off, r_off
 
@@ -94,7 +94,7 @@ class NeuralGraphViT(NeuralGraphTransformer):
         for c_off in offset_same_neurons:
             items = []
             for n_in, layer_name, key in offset_same_neurons[c_off]:
-                if layer_name  == 'conv_proj' and key == 'weight':
+                if layer_name == self._names['conv1'] and key == 'weight':
                     r = edge_index[layer_name][key][0]
                     n_in = (r[-1] - r[0] + 1).item()
                 items.append((n_in, layer_name, key))

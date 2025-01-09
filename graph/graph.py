@@ -20,10 +20,12 @@ import os.path
 import numpy as np
 import torch
 import torch_geometric as pyg
-from utils import mem
 from torch import arange, zeros, ones, zeros_like
 from torch_geometric.utils import to_networkx, add_self_loops
 from torch_geometric.transforms import ToUndirected, Compose, AddSelfLoops, AddLaplacianEigenvectorPE
+import psutil
+
+process = psutil.Process(os.getpid())  # to get memory usage
 
 
 class NeuralGraph:
@@ -38,7 +40,7 @@ class NeuralGraph:
                  verbose=False):
         """
         Generic neural graph constructor for a model with fc/conv layers.
-        :param model_dict: list obtained using model.named_parameters() or list/dict of (name, shape) tuples
+        :param model_dict: nn.Module or list obtained using model.named_parameters() or list/dict of (name, shape) tuples
         :param lpe: number of laplacian eigenvectors for positional encoding or tensor/ndarray of shape (num_nodes, lpe)
         :param max_feat_size: maximum parameter feature size such as 3x3=9 for conv,
                 so that total node/edge feature size is max_feat_size * state_dim.
@@ -51,7 +53,7 @@ class NeuralGraph:
 
         self._model_dict = {
             name: p.shape if isinstance(p, torch.Tensor) else p
-            for name, p in model_dict
+            for name, p in (model_dict.named_parameters() if isinstance(model_dict, torch.nn.Module) else model_dict)
         }  # dict of {name: shape}
 
         self.use_param_types = use_param_types
@@ -135,6 +137,8 @@ class NeuralGraph:
         offset_same_neurons = {}
         c_off, r_off = 0, 0
         for layer, (name, sz) in enumerate(self._model_dict.items()):
+            if len(sz) == 0:  # some scalar param, e.g. for clip vit (ignoring them for now, but maybe do smth smart)
+                continue
             param_type = self._param_type(name, sz)
             layer_name, key = name[:name.rfind('.')], name[name.rfind('.') + 1:]
             if layer_name not in edge_index:
@@ -199,7 +203,8 @@ class NeuralGraph:
 
         self.pyg_graph = pyg.data.Data(edge_index=edge_index,
                                        edge_type=param_types,
-                                       pos_w=zeros(n_nodes, dtype=torch.long)  # dummy pos enc (only for transformers)
+                                       pos_w=zeros(n_nodes, dtype=torch.long),  # dummy pos enc (only for transformers)
+                                       num_nodes=n_nodes
                                        )
 
         return self.pyg_graph
@@ -217,7 +222,11 @@ class NeuralGraph:
             print('Computing Laplacian positional encoding (LPE) for k={}, '
                   'graph with {} nodes, mem on cpu={:.3f}G...'.format(self.lpe,
                                                                       self.pyg_graph.num_nodes,
-                                                                      mem('cpu')))
+                                                                      process.memory_info().rss / 10 ** 9))
+        # In the NiNo paper, LPE is computed based on the binary edges without taking the parameter values into account
+        # To compute LPE based on the parameter values, need to set self.pyg_graph.edge_weight to params
+        # But the edge_weight needs to be non-negative, so need to adjust the params somehow
+        # Setting the edge_weight to the params is possibly by self.pyg_graph.edge_weight = self.to_edges(params)
         self.pyg_graph.pos = transform(self.pyg_graph.to('cpu')).laplacian_eigenvector_pe.to(device)
 
     def _get_weight(self, states, offset, name, sz):
@@ -509,8 +518,8 @@ class NeuralGraph:
                 f'  num_edges={self.pyg_graph.num_edges},\n'
                 f'  edge_index={self.pyg_graph.edge_index.shape},\n'
                 f'  has_self_loops={self.pyg_graph.has_self_loops()},\n'
-                f'  pos (LPE)={lpe_sz}\n'
-                f'  num model params={self._n_params})\n')
+                f'  pos (LPE)={lpe_sz},\n'
+                f'  num model params={self._n_params}\n)\n')
 
 def run_test(model, graph, name=''):
     print(model)
