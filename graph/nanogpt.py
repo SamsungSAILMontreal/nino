@@ -4,7 +4,7 @@
 
 """
 This is a copy from https://github.com/KellerJordan/modded-nanogpt/blob/a8b83b26fd13531ee907fcc7d3211b8ada156fad/train_gpt.py
-There are two cosmetic changes in this copy to avoid some hardcoded values (see the lines with @bknyaz).
+There are a few cosmetic changes in this copy to avoid some hardcoded values (see the lines with @bknyaz).
 
 """
 
