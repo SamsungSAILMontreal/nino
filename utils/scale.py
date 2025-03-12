@@ -13,7 +13,7 @@ import torch
 
 METHODS = ['std', 'std-param', 'min-max', 'min-max-param']
 
-def scale_params(x, model_dict, scales=None, method='std', is_train=False, eps=1e-6):
+def scale_params(x, model_dict, scales=None, method='std', is_train=False, eps=1e-6, to_vector=False):
     # x: psz, seq_len/batch (>=1 for training), state_dim
     assert x.dim() in [2, 3], x.shape
     sz_org = x.shape
@@ -57,6 +57,9 @@ def scale_params(x, model_dict, scales=None, method='std', is_train=False, eps=1
         x[offset: offset + n] = (w - mn) / (sd + eps)
         offset += n
         if compute_scales:
+            if to_vector:
+                mn = mn.expand(len(w), *mn.shape[1:])
+                sd = sd.expand(len(w), *sd.shape[1:])
             scales.append((mn, sd))
         if per_param or is_wte_train:
             break
@@ -65,6 +68,9 @@ def scale_params(x, model_dict, scales=None, method='std', is_train=False, eps=1
         x = x.squeeze(1)
 
     assert offset == len(x), (offset, len(x))
+
+    if compute_scales and to_vector:
+        scales = torch.cat([torch.stack(s, dim=1) for s in scales]).squeeze(-1)
 
     return x, scales
 
@@ -88,8 +94,19 @@ def unscale_params(x, model_dict, scales, method='std'):
         n = len(x) if per_param else shape.numel()
         w = x[offset: offset + n]  # (n, seq_len, state_dim)
         assert len(w) > 0, (name, 'p', shape, 'w', w.shape, 'x', x.shape, 'offset', offset)
-        mn, sd = scales[layer]
-        x[offset: offset + n] = w * sd.to(w) + mn.to(w)
+        if isinstance(scales, (list, tuple)):
+            mn, sd = scales[layer]
+        else:
+            assert len(scales.shape) > 1 and scales.shape[1] == 2, scales.shape
+            mn, sd = scales[offset: offset + n].split(1, dim=1)
+            mn = mn.view(-1, 1, 1)
+            sd = sd.view(-1, 1, 1)
+
+        try:
+            x[offset: offset + n] = w * sd.to(w) + mn.to(w)
+        except:
+            print('offset:', offset, 'n:', n, 'w:', w.shape, 'mn:', mn.shape, 'sd:', sd.shape)
+            raise
         offset += n
         if per_param:
             break

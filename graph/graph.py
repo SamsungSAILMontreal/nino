@@ -284,9 +284,10 @@ class NeuralGraph:
 
             edge_attr[start: end, :w.shape[2] * w.shape[3]] = w.flatten(0, 1).flatten(1, 2)  # e.g. [1, 4, 3*3, 5]
 
-        assert end == self.pyg_graph.edge_index.shape[1] - self.pyg_graph.num_nodes, (end,
-                                                                                      self.pyg_graph.edge_index.shape,
-                                                                                      self.pyg_graph.num_nodes)
+        assert end == self.pyg_graph.edge_index.shape[1] - (self.pyg_graph.num_nodes if self.self_loops else 0), (
+            end,
+            self.pyg_graph.edge_index.shape,
+            self.pyg_graph.num_nodes)
         if self.self_loops:
             # append self-loop features to the edge_attr
             # should correspond to the appended edge_index values in self.pyg_graph.edge_index
@@ -322,24 +323,29 @@ class NeuralGraph:
         else:
             self.pyg_graph.edge_attr = self.to_edges(states, False)
 
-    def to_vector(self, edge_attr_dim=0, clean_up=True):
+    def to_vector(self, edge_attr=None, edge_attr_dim=0, clean_up=True):
         """
         Converts neural graph's edge attributes to a parameter vector.
+        :param edge_attr: edge attributes of the neural graph
         :param edge_attr_dim: edge attribute dimension to use for conversion
         :param clean_up: delete edge_attr after conversion
         :return:
         """
-        x = zeros(self._n_params).to(self.pyg_graph.edge_attr)
+        edge_attr_none = edge_attr is None
+        if edge_attr_none:
+            edge_attr = self.pyg_graph.edge_attr
+
+        x = zeros(self._n_params).to(edge_attr)
         for layer, (name, sz) in enumerate(self._model_dict.items()):
             if name not in self._param_vector_index:
                 continue
             start, end = self._edge_dict[name]
             n_out, n_in = sz[0], sz[1] if len(sz) > 1 else 1
-            w = self.pyg_graph.edge_attr[start: end].view(n_in, n_out, self.max_feat_size, -1)
+            w = edge_attr[start: end].view(n_in, n_out, self.max_feat_size, -1)
             w = w[:, :, :sz[2:].numel() if len(sz) > 2 else 1, edge_attr_dim]
             w = self._permute(w, name, sz)  # make out_dim before in_dim for pytorch
             x[self._param_vector_index[name].flatten()] = w.flatten()
-        if clean_up:
+        if clean_up and edge_attr_none:
             del self.pyg_graph.edge_attr  # edge_attr not need after prediction
         return x
 
@@ -513,10 +519,12 @@ class NeuralGraph:
     # string representation of the neural graph
     def __repr__(self):
         lpe_sz = self.pyg_graph.pos.shape if self.lpe else None
+        edge_sz = self.pyg_graph.edge_attr.shape if self.pyg_graph.edge_attr is not None else None
         return (f'NeuralGraph(\n'
                 f'  num_nodes={self.pyg_graph.num_nodes},\n'
                 f'  num_edges={self.pyg_graph.num_edges},\n'
                 f'  edge_index={self.pyg_graph.edge_index.shape},\n'
+                f'  edge_attr={edge_sz},\n'
                 f'  has_self_loops={self.pyg_graph.has_self_loops()},\n'
                 f'  pos (LPE)={lpe_sz},\n'
                 f'  num model params={self._n_params}\n)\n')

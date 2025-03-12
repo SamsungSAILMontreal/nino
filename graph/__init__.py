@@ -11,3 +11,4 @@ from .graph_bert import *
 from .graph_llama import *
 from .graph_vit import *
 from .graph_vit_clip import *
+from .graph_nanogpt import *

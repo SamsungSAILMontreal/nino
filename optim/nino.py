@@ -105,13 +105,15 @@ class NiNo:
             else:
                 self._model = None
 
-    def set_model(self, model, lpe=None, **kwargs):
+    def set_model(self, model, lpe=None, neural_graph_cls=None, block_name=None, **kwargs):
         """
         Sets the model and creates a neural graph from it.
         Optionally, visualize the neural graph.
         :param model: PyTorch model.
         :param lpe: LPE features if already computed.
-        :param kwargs: NeuralGraph arguments.
+        :param neural_graph_cls: NeuralGraph class (will attempt to infer if not specified).
+        :param block_name: block name (only for subgraph inference).
+        :param kwargs: NeuralGraph arguments (e.g. num_heads is required for Transformers).
         :return:
         """
 
@@ -121,26 +123,26 @@ class NiNo:
             kwargs['lpe'] = lpe
         if self.meta_model.is_mlp:
             kwargs['lpe'] = False
-        block_name = None
-        if isinstance(model, transformers.GPT2PreTrainedModel):
-            neural_graph = NeuralGraphGPT
-            kwargs['num_heads'] = model.config.n_head
-            block_name = 'transformer.h.'
-        elif isinstance(model, transformers.BertPreTrainedModel):
-            neural_graph = NeuralGraphBERT
-            kwargs['num_heads'] = model.config.num_attention_heads
-            block_name = 'encoder.layer.'
-        elif isinstance(model, transformers.LlamaPreTrainedModel):
-            neural_graph = NeuralGraphLlama
-            kwargs['num_heads'] = model.config.num_attention_heads
-            kwargs['num_key_value_heads'] = model.config.num_key_value_heads
-            block_name = 'model.layers.'
-        elif isinstance(model, torchvision.models.VisionTransformer):
-            neural_graph = NeuralGraphViT
-            kwargs['num_heads'] = model.encoder.layers.encoder_layer_0.num_heads
-            block_name = 'encoder.layers.encoder_layer_'
-        else:
-            neural_graph = NeuralGraph
+        if neural_graph_cls is None:
+            if isinstance(model, transformers.GPT2PreTrainedModel):
+                neural_graph_cls = NeuralGraphGPT
+                kwargs['num_heads'] = model.config.n_head
+                block_name = 'transformer.h.'
+            elif isinstance(model, transformers.BertPreTrainedModel):
+                neural_graph_cls = NeuralGraphBERT
+                kwargs['num_heads'] = model.config.num_attention_heads
+                block_name = 'encoder.layer.'
+            elif isinstance(model, transformers.LlamaPreTrainedModel):
+                neural_graph_cls = NeuralGraphLlama
+                kwargs['num_heads'] = model.config.num_attention_heads
+                kwargs['num_key_value_heads'] = model.config.num_key_value_heads
+                block_name = 'model.layers.'
+            elif isinstance(model, torchvision.models.VisionTransformer):
+                neural_graph_cls = NeuralGraphViT
+                kwargs['num_heads'] = model.encoder.layers.encoder_layer_0.num_heads
+                block_name = 'encoder.layers.encoder_layer_'
+            else:
+                neural_graph_cls = NeuralGraph
 
         self._model = model
         self._model_dict = [
@@ -171,13 +173,13 @@ class NiNo:
                 start_time = time.time()
                 if lpe is not None and isinstance(lpe, list):  # lpe is a list of LPE features for each block
                     kwargs['lpe'] = lpe[i]
-                self.graph.append(neural_graph(subgraph, **kwargs))
+                self.graph.append(neural_graph_cls(subgraph, **kwargs))
                 if self.verbose:
                     print('\nNeural graph {}/{} for "{}" ({}) constructed in {:.3f} sec:\n{}'.format(
                         i + 1,
                         len(graph),
                         model.__class__.__name__,
-                        neural_graph.__name__,
+                        neural_graph_cls.__name__,
                         time.time() - start_time,
                         self.graph[-1]))
                     if self.verbose > 1:
@@ -187,10 +189,10 @@ class NiNo:
             if lpe is not None and isinstance(lpe, list):  # lpe is a list of LPE features for each block
                 raise ValueError('lpe should be a single tensor for the entire model when subgraph is not used')
             start_time = time.time()
-            self.graph = neural_graph(self._model_dict, **kwargs)
+            self.graph = neural_graph_cls(self._model_dict, **kwargs)
             if self.verbose:
                 print('\nNeural graph for "{}" ({}) constructed in {:.3f} sec:\n{}'.format(model.__class__.__name__,
-                                                                                           neural_graph.__name__,
+                                                                                           neural_graph_cls.__name__,
                                                                                            time.time() - start_time,
                                                                                            self.graph))
                 if self.verbose > 1:

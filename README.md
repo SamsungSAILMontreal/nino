@@ -6,9 +6,14 @@
 
 </pre>
 
-[![arXiv](https://img.shields.io/badge/arXiv-2403.12143-b31b1b.svg?logo=arxiv)](https://arxiv.org/abs/2409.04434)
+**ICLR 2025 [`link to the slides and video presentation`](https://iclr.cc/virtual/2025/poster/29046)**,
 
+[![arXiv](https://img.shields.io/badge/arXiv-2403.12143-b31b1b.svg?logo=arxiv)](https://arxiv.org/abs/2409.04434), 
+[openreview](https://openreview.net/forum?id=cUFIil6hEG), 
 [marktechpost](https://www.marktechpost.com/2024/09/17/nino-a-novel-machine-learning-approach-to-accelerate-neural-network-training-through-neuron-interaction-and-nowcasting/)
+
+
+
 
 # Intro
 
@@ -48,6 +53,7 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
   - [x] Llama (experimental code, see a graph for a smaller variant of `meta-llama/Meta-Llama-3.1-8B` in the [`results`](results) folder)
   - [x] BERT (experimental code, *not part of the paper*)
   - [x] Vision Transformer (experimental code, *not part of the paper*)
+  - [x] &#128293; **Mar 12, 2025**: [NanoGPT](https://github.com/KellerJordan/modded-nanogpt) (experimental code, *not part of the paper*, see [`results`](results), [`graph/graph_nanogpt.py`](graph/graph_nanogpt.py) and my fork https://github.com/bknyaz/modded-nanogpt)
 - [x] Code for a NiNo step in a separate process (with an example for Llama3).
   - &#128293; **Dec 10, 2024**: efficient inference with `--subgraph` and `--edge_sample_ratio 0.05`
   allowing the NiNo step for **Llama3.2-1B** to be done on a single GPU.
