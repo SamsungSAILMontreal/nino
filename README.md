@@ -6,7 +6,7 @@
 
 </pre>
 
-**ICLR 2025 [`link to the slides and video presentation`](https://iclr.cc/virtual/2025/poster/29046)**,
+**ICLR 2025 [`link to the slides and video presentation`](https://iclr.cc/virtual/2025/poster/29046)**
 
 [![arXiv](https://img.shields.io/badge/arXiv-2403.12143-b31b1b.svg?logo=arxiv)](https://arxiv.org/abs/2409.04434), 
 [openreview](https://openreview.net/forum?id=cUFIil6hEG), 
