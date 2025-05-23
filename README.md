@@ -214,12 +214,10 @@ MIT, see the [LICENSE](LICENSE) file.
 # Citation
 
 ```
-@misc{knyazev2024accelerating,
+@inproceedings{knyazev2024accelerating,
   title={Accelerating Training with Neuron Interaction and Nowcasting Networks}, 
-  author={Boris Knyazev and Abhinav Moudgil and Guillaume Lajoie and Eugene Belilovsky and Simon Lacoste-Julien},
-  year={2024},
-  eprint={2409.04434},
-  archivePrefix={arXiv},
-  url={https://arxiv.org/abs/2409.04434}, 
+  author={Boris Knyazev and Abhinav Moudgil and Guillaume Lajoie and Eugene Belilovsky and Simon Lacoste-Julien},  
+  booktitle={International Conference on Learning Representations},
+  year={2025},
 }
 ```
