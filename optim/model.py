@@ -151,11 +151,12 @@ class NiNoModel(nn.Module):
                 x_out.append(module(x[i:i + chunk_size]))
         return x if inplace else torch.cat(x_out, dim=0)
 
-    def forward(self, graphs, k=None):
+    def forward(self, graphs, k=None, return_embeddings=False):
         """
         Forward pass of the model.
         :param graphs: pytorch geometric batch of graphs (can be multiple models stacked as disconnected graphs)
         :param k: number of steps to predict into the future (only used for dms during inference)
+        :param return_embeddings: whether to return the node/edge embeddings instead of the updated graphs
         :return: graphs with updated edge (and node) features
         """
 
@@ -172,7 +173,8 @@ class NiNoModel(nn.Module):
             device = None
 
         if self.is_mlp:
-
+            if return_embeddings:
+                raise NotImplementedError('return_embeddings=True is not implemented for MLP in this code version')
             # By using chunking in th MLP, we avoid storing the full edge_attr tensor (n_params, feat_dim) in memory
             chunk_size = len(graphs.edge_attr) if self.chunk_size in [0, -1, None] or self.training else self.chunk_size
 
@@ -234,6 +236,11 @@ class NiNoModel(nn.Module):
 
             graphs.x, graphs.edge_attr = self.gnn(
                 x=graphs.x, edge_index=graphs.edge_index.to(device), edge_attr=graphs.edge_attr)
+
+            if return_embeddings:
+                nodes = graphs.x.squeeze().mean(0)
+                edges = graphs.edge_attr.squeeze().mean(0)
+                return nodes, edges
 
             if self.dms and not self.training:
                 assert k is not None and k >= 1, k
