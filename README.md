@@ -8,10 +8,13 @@
 
 **ICLR 2025 [`link to the slides and video presentation`](https://iclr.cc/virtual/2025/poster/29046)**
 
-[![arXiv](https://img.shields.io/badge/arXiv-2403.12143-b31b1b.svg?logo=arxiv)](https://arxiv.org/abs/2409.04434), 
-[openreview](https://openreview.net/forum?id=cUFIil6hEG), 
+[![arXiv](https://img.shields.io/badge/arXiv-2403.12143-b31b1b.svg?logo=arxiv)](https://arxiv.org/abs/2409.04434) 
+
+[openreview](https://openreview.net/forum?id=cUFIil6hEG)
+
 [marktechpost](https://www.marktechpost.com/2024/09/17/nino-a-novel-machine-learning-approach-to-accelerate-neural-network-training-through-neuron-interaction-and-nowcasting/)
 
+[blogpost](https://medium.com/@BorisAKnyazev/optimizing-llms-faster-by-learning-connections-neuron-interaction-and-nowcasting-networks-d9a722309eab)
 
 
 
