@@ -1,4 +1,4 @@
-# Copyright (c) 2024. Samsung Electronics Co., Ltd.
+# Copyright (c) 2024-2026. Samsung Electronics Co., Ltd.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
@@ -137,11 +137,24 @@ class NiNo:
                 kwargs['num_heads'] = model.config.num_attention_heads
                 kwargs['num_key_value_heads'] = model.config.num_key_value_heads
                 block_name = 'model.layers.'
+            elif isinstance(model, transformers.Qwen3PreTrainedModel):
+                neural_graph_cls = NeuralGraphQwen
+                kwargs['num_heads'] = model.config.num_attention_heads
+                kwargs['num_key_value_heads'] = model.config.num_key_value_heads
+                block_name = 'model.layers.'
             elif isinstance(model, torchvision.models.VisionTransformer):
                 neural_graph_cls = NeuralGraphViT
                 kwargs['num_heads'] = model.encoder.layers.encoder_layer_0.num_heads
                 block_name = 'encoder.layers.encoder_layer_'
+            elif model.__class__.__name__ in ['VisualTransformer', 'VisionTransformer']:
+                # vit_clip model from openai
+                neural_graph_cls = NeuralGraphViTCLIP
+                kwargs['num_heads'] = model.transformer.resblocks[0].attn.num_heads
+                block_name = 'transformer.resblocks.'
             else:
+                if self.verbose:
+                    print('WARNING: cannot infer the neural graph class for the model of type', model.__class__.__name__,
+                          ', using the generic NeuralGraph class')
                 neural_graph_cls = NeuralGraph
 
         self._model = model

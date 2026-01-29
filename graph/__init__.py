@@ -1,4 +1,4 @@
-# Copyright (c) 2024. Samsung Electronics Co., Ltd.
+# Copyright (c) 2024-2026. Samsung Electronics Co., Ltd.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
@@ -12,3 +12,4 @@ from .graph_llama import *
 from .graph_vit import *
 from .graph_vit_clip import *
 from .graph_nanogpt import *
+from .graph_qwen import *

@@ -1,11 +1,11 @@
-# Copyright (c) 2024. Samsung Electronics Co., Ltd.
+# Copyright (c) 2024-2026. Samsung Electronics Co., Ltd.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
 """
-Neural graph for Vision Transformers of open-clip.
+Neural graph for Vision Transformers of open-clip (tested with open-clip-torch==2.0.2).
 This is experimental code that has not been well tested and was not used in the NiNo paper.
 
 To test the NeuralGraph class with a ViT model, run:
