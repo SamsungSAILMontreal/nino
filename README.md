@@ -62,6 +62,9 @@ The experiments from our paper can be run using a single GPU with <= 80GB of mem
   allowing the NiNo step for **Llama3.2-1B** to be done on a single GPU.
 - [x] Training dataset and training code for NiNo. 
   - **Nov 22, 2024**: the code update is important to reproduce training of the NiNo model.
+- [x] **&#128293; Feb 3, 2026**: Added model merging scripts and results (see https://bknyaz.github.io/blog/2026/meta-merge/ for details).
+  - [x] CLIP ViTs [merge_vit.py](merge_vit.py)
+  - [x] Qwen3 LLMs [merge_qwen.py](merge_qwen.py)
 
 # Pretrained NiNo models
 

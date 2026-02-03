@@ -154,12 +154,14 @@ for dataset in datasets:
     acc.append(eval_single_dataset(image_encoder, dataset, args)['top1'])
 print(f'Merged Task Vectors Accuracy: {100 * sum(acc) / len(acc):.2f}%')
 
-models = [torch.load(pretrained_checkpoint, weights_only=False)]
+# NiNo merging
+pretrained = torch.load(pretrained_checkpoint, weights_only=False)
+models = [pretrained.model.visual]
 for dataset in datasets:
-    models.append(torch.load(f'./task_vectors/checkpoints/{model}/{dataset}/finetuned.pt', weights_only=False))
-image_encoder_task1.model.visual = merge_nino(models, args.save)
+    models.append(torch.load(f'./task_vectors/checkpoints/{model}/{dataset}/finetuned.pt', weights_only=False).model.visual)
+pretrained.model.visual = merge_nino(models, args.save)
 print('\nevaluating NiNo-merged task vectors...')
 acc = []
 for dataset in datasets:
-    acc.append(eval_single_dataset(image_encoder_task1, dataset, args)['top1'])
+    acc.append(eval_single_dataset(pretrained, dataset, args)['top1'])
 print(f'NiNo Merged Task Vectors Accuracy: {100 * sum(acc) / len(acc):.2f}%')
