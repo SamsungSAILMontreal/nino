@@ -115,6 +115,5 @@ def test_graph_qwen():
 
 
 if __name__ == '__main__':
-    import sys
     test_graph_qwen()
     print('Done!')

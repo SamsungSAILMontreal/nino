@@ -23,79 +23,17 @@ The saved model can then be evaluated with lm-eval or other tools.
 import os
 import sys
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
-
-def merge_nino(models, save_path):
-
-    from optim import NiNo
-
-    assert len(models) >= 3, (f'At least three models are required (got {len(models)} instead): '
-                              f'pretrained/base model, fine-tuned model 1, fine-tuned model 2, etc.')
-
-    opt = NiNo(base_opt=None,
-               model=None,
-               ckpt='./checkpoints/nino_no_posw.pt',
-               verbose=1,
-               subgraph=True,
-               upd_scale=0.1,
-               edge_sample_ratio=0.05,
-               nino_device='auto',
-               chunk_size=int(10**6))
-
-    graph_feat_path = os.path.join(save_path, 'graph_feat.pt')
-    if os.path.exists(graph_feat_path):
-        print('loading cached graph lpe from', graph_feat_path, flush=True)
-        lpe = torch.load(graph_feat_path)
-        print('loaded graph lpe', f'{len(lpe)} blocks' if isinstance(lpe, list) else lpe.shape)
-    else:
-        lpe = None
-
-    opt.set_model(models[0], lpe=lpe)  # construct the neural graph
-    if not os.path.exists(graph_feat_path):
-        # cache the lpe for future reuse
-        if isinstance(opt.graph, list):
-            pos_lst = []
-            for g in opt.graph:
-                if hasattr(g.pyg_graph, 'pos') and g.pyg_graph.pos is not None:
-                    pos_lst.append(g.pyg_graph.pos)
-            print(f'saving graph lpe {len(pos_lst)}-{pos_lst[0].shape} to', graph_feat_path, flush=True)
-            torch.save(pos_lst, graph_feat_path)
-        else:
-            if hasattr(opt.graph.pyg_graph, 'pos') and opt.graph.pyg_graph.pos is not None:
-                print(f'saving graph lpe {opt.graph.pyg_graph.pos.shape} to', graph_feat_path, flush=True)
-                torch.save(opt.graph.pyg_graph.pos, graph_feat_path)
-
-    params_tasks = []
-    for model_ in models:
-        params_tasks.append(torch.cat([p.data.view(-1).to('cpu') for n, p in model_.named_parameters()]))
-
-    if len(models) == 3:
-        # merging two tasks
-        opt.states.extend([params_tasks[i] for i in [0, 1, 2, 2, 1]])
-    elif len(models) == 4:
-        # merging three tasks
-        opt.states.extend([params_tasks[i] for i in [0, 1, 2, 2, 3]])
-    elif len(models) == 5:
-        # merging four tasks
-        opt.states.extend(params_tasks)
-    else:
-        raise NotImplementedError(f'Merging {len(models)} tasks is not supported because NiNo has 5 features.')
-    opt.step(k=5)
-    return opt._model
-
-def model_merge(models, method='weight_avg'):
-    if method == 'weight_avg':
-        merged_state_dict = {}
-        for key in models[0].state_dict().keys():
-            merged_state_dict[key] = sum(model.state_dict()[key] for model in models) / len(models)
-        merged_model = AutoModelForCausalLM.from_pretrained(models[0].name_or_path)
-        merged_model.load_state_dict(merged_state_dict)  # Load the averaged state dict into the new model
-    else:
-        raise ValueError(f"Unknown merging method: {method}")
-    return merged_model
 
 if __name__ == "__main__":
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from merge_vit import merge_nino
+
+    if len(sys.argv) != 4:
+        print("Usage: python merge_qwen.py <method> <model_base> <save_path>")
+        print("Example: python merge_qwen.py meta_merge Qwen3-0.6B /path/to/save/merged/model")
+        sys.exit(1)
 
     method = sys.argv[1]
     model_base = sys.argv[2]
@@ -116,14 +54,39 @@ if __name__ == "__main__":
 
     try:
         if not os.path.exists(save_path):
-            os.makedirs(save_path)
+            os.makedirs(save_path, exist_ok=True)
     except Exception as e:
         print(e, flush=True)
 
     if method == 'meta_merge':
-        model = merge_nino(models, save_path)
+
+        token_emb = 0
+        for ind, model_ in enumerate(models):
+            if ind > 0:
+                # accumulate token embeddings of fine-tuned models for averaging later
+                token_emb += model_.model.embed_tokens.weight.data.to('cpu').clone()
+            # use only first 1k embeddings in the vocab to reduce memory usage in meta-merge
+            model_.model.embed_tokens.weight.data = model_.model.embed_tokens.weight.data[:1024, :]
+
+        model = merge_nino(models,
+                           save_path,
+                           k_range=range(1, 6),  # average over k=1..5
+                           subgraph=True,
+                           upd_scale=0.3,
+                           edge_sample_ratio=0.05
+                           )
+
+        # average params of token embeddings of fine-tuned models (excluding the base model)
+        model.model.embed_tokens.weight.data = token_emb.to(model.model.embed_tokens.weight.data.device) / (len(models) - 1)
+
+    elif method == 'weight_avg':
+        merged_state_dict = {}
+        for key in models[0].state_dict().keys():
+            merged_state_dict[key] = sum(model.state_dict()[key] for model in models) / len(models)
+        merged_model = AutoModelForCausalLM.from_pretrained(models[0].name_or_path)
+        merged_model.load_state_dict(merged_state_dict)  # Load the averaged state dict into the new model
     else:
-        model = model_merge(models, method=method)
+        raise ValueError(f"Unknown merging method: {method}")
 
     try:
         tokenizer.save_pretrained(save_path)
