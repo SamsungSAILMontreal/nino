@@ -10,11 +10,11 @@ This is experimental code that has not been well tested and was not used in the 
 
 Merge Qwen models using NiNo or simple weight averaging.
 
-NiNo:
-    python merge_qwen.py meta_merge /path/to/save/merged/model
+NiNo for Qwen3-0.6B:
+    python merge_qwen.py meta_merge Qwen3-0.6B /path/to/save/merged/model
 
-Weight averaging:
-    python merge_qwen.py weight_avg /path/to/save/merged/model
+Weight averaging for Qwen3-0.6B:
+    python merge_qwen.py weight_avg Qwen3-0.6B /path/to/save/merged/model
 
 The saved model can then be evaluated with lm-eval or other tools.
 
@@ -46,7 +46,8 @@ if __name__ == "__main__":
         models.append(AutoModelForCausalLM.from_pretrained(model_name, torch_dtype='auto', device_map='cpu'))
 
     for model_name in [f'SamsungSAILMontreal/{model_base}-Math',
-                       f'SamsungSAILMontreal/{model_base}-Fr']:
+                       f'SamsungSAILMontreal/{model_base}-Fr',
+                       f'SamsungSAILMontreal/{model_base}-Code']:
         print(f"Loading model: {model_name}")
         models.append(AutoModelForCausalLM.from_pretrained(model_name, torch_dtype='auto', device_map='cpu'))
         if tokenizer is None:
@@ -83,8 +84,8 @@ if __name__ == "__main__":
         merged_state_dict = {}
         for key in models[0].state_dict().keys():
             merged_state_dict[key] = sum(model.state_dict()[key] for model in models) / len(models)
-        merged_model = AutoModelForCausalLM.from_pretrained(models[0].name_or_path)
-        merged_model.load_state_dict(merged_state_dict)  # Load the averaged state dict into the new model
+        model = AutoModelForCausalLM.from_pretrained(models[0].name_or_path)
+        model.load_state_dict(merged_state_dict)  # Load the averaged state dict into the new model
     else:
         raise ValueError(f"Unknown merging method: {method}")
 
