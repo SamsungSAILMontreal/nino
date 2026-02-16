@@ -157,13 +157,17 @@ if __name__ == '__main__':
         pretrained = torch.load(pretrained_checkpoint, weights_only=False)
         models = [pretrained.model.visual]
 
-        conv_weight, token_emb, ln_final = 0, 0, 0  # special handling for these layers
+        unsupported_params = {}  # special handling for these layers
+        for n, p in pretrained.named_parameters():
+            if 'visual.' not in n or 'conv1.weight' in n:
+                unsupported_params[n] = 0
+        print('unsupported_params', unsupported_params)
+
         for dataset in datasets:
-            model_ = torch.load(f'./task_vectors/checkpoints/{model}/{dataset}/finetuned.pt', weights_only=False).model
-            models.append(model_.visual)
-            conv_weight += model_.visual.conv1.weight.clone()
-            token_emb += model_.token_embedding.weight.clone()
-            ln_final += model_.ln_final.weight.clone()
+            model_ = torch.load(f'./task_vectors/checkpoints/{model}/{dataset}/finetuned.pt', weights_only=False)
+            models.append(model_.model.visual)
+            for key in unsupported_params:
+                unsupported_params[key] += model_.state_dict()[key].clone()
 
         for model_ in models:
             # downsample model.visual.conv1.weight of shape 16x16 to 3x3 by using pytorch bilinear interpolation
@@ -180,12 +184,11 @@ if __name__ == '__main__':
                                              edge_sample_ratio=0.2,  # can reduce to fit in memory
                                              )
 
-        # average params of other layers (token_emb, ln_final weights)
-        pretrained.model.token_embedding.weight.data = token_emb / len(datasets)
-        pretrained.model.ln_final.weight.data = ln_final / len(datasets)
-
-        # average params for conv1 because for now NiNo cannot directly process conv layers with kernel size > 3x3
-        pretrained.model.visual.conv1.weight.data = conv_weight / len(datasets)
+        # average params of other layers (conv1, token_emb, ln_final weights)
+        for n, p in pretrained.named_parameters():
+            if n in unsupported_params:
+                print('averaging unsupported param', n, p.shape)
+                p.data = unsupported_params[n] / len(datasets)
 
     print('\nevaluating NiNo-merged task vectors...')
     acc = []
