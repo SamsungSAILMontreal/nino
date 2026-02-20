@@ -14,7 +14,7 @@
 
 [marktechpost](https://www.marktechpost.com/2024/09/17/nino-a-novel-machine-learning-approach-to-accelerate-neural-network-training-through-neuron-interaction-and-nowcasting/)
 
-[blogpost](https://medium.com/@BorisAKnyazev/optimizing-llms-faster-by-learning-connections-neuron-interaction-and-nowcasting-networks-d9a722309eab)
+[blogpost](https://bknyaz.github.io/blog/2026/meta-merge/)
 
 
 

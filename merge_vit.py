@@ -39,7 +39,16 @@ import sys
 
 
 @torch.no_grad()
-def merge_nino(models, save_path, k_range=range(1,6), **kwargs):
+def merge_nino(models, save_path, k_range=range(1,6), ckpt='./checkpoints/nino_no_posw.pt', **kwargs):
+    """
+
+    :param models:
+    :param save_path:
+    :param k_range:
+    :param ckpt: ./checkpoints/nino_mlp.pt for mlp-based NiNo, ./checkpoints/nino_no_posw.pt for the GNN-based NiNo
+    :param kwargs:
+    :return:
+    """
 
     from optim import NiNo
 
@@ -48,14 +57,14 @@ def merge_nino(models, save_path, k_range=range(1,6), **kwargs):
 
     opt = NiNo(base_opt=None,
                model=None,
-               ckpt='./checkpoints/nino_no_posw.pt',
+               ckpt=ckpt,
                verbose=1,
                nino_device='auto',
                chunk_size=int(10 ** 6),
                 **kwargs)
 
     graph_feat_path = os.path.join(save_path, 'graph_feat.pt')
-    if os.path.exists(graph_feat_path):
+    if os.path.exists(graph_feat_path) and not opt.meta_model.is_mlp:
         print('loading cached graph lpe from', graph_feat_path, flush=True)
         lpe = torch.load(graph_feat_path)
         print('loaded graph lpe', f'{len(lpe)} blocks' if isinstance(lpe, list) else lpe.shape)
@@ -63,19 +72,18 @@ def merge_nino(models, save_path, k_range=range(1,6), **kwargs):
         lpe = None
 
     opt.set_model(models[0], lpe=lpe)  # construct the neural graph based on the pretrained model's structure
-    if not os.path.exists(graph_feat_path):
+    if not os.path.exists(graph_feat_path) and not opt.meta_model.is_mlp:
         # cache the lpe for future reuse
-        if isinstance(opt.graph, list):
+        if isinstance(opt.graph, list) and len(opt.graph) > 0:
             pos_lst = []
             for g in opt.graph:
                 if hasattr(g.pyg_graph, 'pos') and g.pyg_graph.pos is not None:
                     pos_lst.append(g.pyg_graph.pos)
             print(f'saving graph lpe {len(pos_lst)}-{pos_lst[0].shape} to', graph_feat_path, flush=True)
             torch.save(pos_lst, graph_feat_path)
-        else:
-            if hasattr(opt.graph.pyg_graph, 'pos') and opt.graph.pyg_graph.pos is not None:
-                print(f'saving graph lpe {opt.graph.pyg_graph.pos.shape} to', graph_feat_path, flush=True)
-                torch.save(opt.graph.pyg_graph.pos, graph_feat_path)
+        elif hasattr(opt.graph.pyg_graph, 'pos') and opt.graph.pyg_graph.pos is not None:
+            print(f'saving graph lpe {opt.graph.pyg_graph.pos.shape} to', graph_feat_path, flush=True)
+            torch.save(opt.graph.pyg_graph.pos, graph_feat_path)
 
     results = []
     for k in k_range:
